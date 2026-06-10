@@ -272,6 +272,50 @@ serves both login flows because both just produce an `*oauth2.Token`.
 `client --login` forces a fresh interactive login (ignoring the cache);
 `client --logout` deletes `token.json`.
 
+## Configuring the server
+
+Because the server validates tokens **locally**, it needs surprisingly little —
+just two pieces of configuration (`server.New(ctx, issuer, audience)`):
+
+1. **The issuer URL** (`--issuer`, e.g. `http://127.0.0.1:5556/dex`). This is the
+   anchor for everything else. On startup the server fetches the issuer's
+   discovery document (`<issuer>/.well-known/openid-configuration`) and learns:
+   - the **`jwks_uri`** — where to fetch the provider's public signing keys
+     (JWKS), used to verify token **signatures**;
+   - the canonical **`issuer`** string — which must match the token's `iss` claim.
+2. **The expected audience** (`--audience`, e.g. `oidc-experiment-api`) — the
+   value the server requires in the token's `aud` claim, i.e. its own
+   resource-server identity (see "Token audience" above).
+
+What it does **not** need, and why:
+
+- **No client id / secret.** The server is a *resource server*, not an OAuth
+  client. It never calls the token or authorization endpoints and never logs
+  anyone in. The only provider endpoint it touches is the **JWKS** — public keys,
+  no authentication required.
+- **No redirect URI, scopes, or PKCE** — those belong to the client.
+- **No JWKS URL by hand** — it is discovered from the issuer. (You could supply it
+  directly if a provider lacked discovery, but standard OIDC providers have it.)
+- **No per-request call to the provider** — JWKS is fetched once and cached.
+
+Implicit requirements worth noting:
+
+- **Network reachability to the issuer** at startup (discovery + JWKS), and
+  occasionally afterward for key rotation. If the provider is unreachable on boot,
+  `server.New` fails.
+- **A correct clock** (NTP) — the `exp` / `iat` / `nbf` checks assume the server's
+  time is roughly right.
+- **Matching signing algorithm** — `go-oidc` defaults to RS256 (what Dex uses). A
+  provider signing with ES256 etc. would require configuring the allowed algs,
+  which discovery advertises in `id_token_signing_alg_values_supported`.
+
+> **The introspection exception.** If the server instead used **opaque** access
+> tokens, or chose introspection for immediate revocation (see
+> [INTROSPECTION.md](INTROSPECTION.md)), it *would* need its own **client
+> credentials** to authenticate to the provider's `/introspect` endpoint. Local
+> validation needs only public information (issuer + audience); introspection
+> needs the server to be a credentialed client.
+
 ## Server-side verification
 
 On startup the server performs OIDC **discovery** against the issuer and builds
