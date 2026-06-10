@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gilramir/oidc-experiment/internal/rpc"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -115,23 +116,23 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("ValidTokenAccepted", func(t *testing.T) {
 		cl, extra := validClaims(m.issuer)
-		user, err := srv.authenticate(m.token(t, cl, extra))
+		claims, err := srv.authenticate(m.token(t, cl, extra))
 		if err != nil {
 			t.Fatalf("expected valid token to be accepted, got: %v", err)
 		}
-		if user != "alice@example.com" {
-			t.Fatalf("identity = %q, want alice@example.com", user)
+		if got := identity(claims); got != "alice@example.com" {
+			t.Fatalf("identity = %q, want alice@example.com", got)
 		}
 	})
 
 	t.Run("FallsBackToSubjectWhenNoEmail", func(t *testing.T) {
 		cl, _ := validClaims(m.issuer)
-		user, err := srv.authenticate(m.token(t, cl, nil))
+		claims, err := srv.authenticate(m.token(t, cl, nil))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if user != "alice-id" {
-			t.Fatalf("identity = %q, want subject alice-id", user)
+		if got := identity(claims); got != "alice-id" {
+			t.Fatalf("identity = %q, want subject alice-id", got)
 		}
 	})
 
@@ -183,6 +184,69 @@ func TestAuthenticate(t *testing.T) {
 			t.Fatal("expected token with an unknown signing key to be rejected")
 		}
 	})
+}
+
+// TestTokenMethodEchoesClaims drives a full request/response over a real
+// connection and checks that the "token" method returns the verified token's
+// claims (sub, email, groups, …) so a user can inspect what the provider issued.
+func TestTokenMethodEchoesClaims(t *testing.T) {
+	m := newMockIDP(t)
+	srv := newTestServer(t, m)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go srv.Serve(ln)
+
+	cl, _ := validClaims(m.issuer)
+	tok := m.token(t, cl, map[string]any{
+		"email":  "alice@example.com",
+		"name":   "Alice",
+		"groups": []string{"engineering", "oidc-admins"},
+	})
+
+	resp := roundtrip(t, ln.Addr().String(), "token", tok)
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: [%d] %s", resp.Error.Code, resp.Error.Message)
+	}
+	result, ok := resp.Result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("result is not an object: %#v", resp.Result)
+	}
+	if result["sub"] != "alice-id" {
+		t.Errorf("sub = %v, want alice-id", result["sub"])
+	}
+	if result["email"] != "alice@example.com" {
+		t.Errorf("email = %v, want alice@example.com", result["email"])
+	}
+	if result["name"] != "Alice" {
+		t.Errorf("name = %v, want Alice", result["name"])
+	}
+	groups, ok := result["groups"].([]interface{})
+	if !ok || len(groups) != 2 || groups[0] != "engineering" || groups[1] != "oidc-admins" {
+		t.Errorf("groups = %#v, want [engineering oidc-admins]", result["groups"])
+	}
+}
+
+// roundtrip sends one JSON-RPC request to a listening server and returns the
+// response, the same way the client does.
+func roundtrip(t *testing.T, addr, method, token string) rpc.Response {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(rpc.Request{JSONRPC: "2.0", ID: 1, Method: method, Token: token}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var resp rpc.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp
 }
 
 // TestReadDeadlineClosesIdleConnection covers the read deadline: a client that

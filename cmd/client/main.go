@@ -63,7 +63,7 @@ func main() {
 
 	method := flag.Arg(0)
 	if method == "" {
-		fmt.Fprintln(os.Stderr, "usage: client [flags] <method>   (e.g. client time)")
+		fmt.Fprintln(os.Stderr, "usage: client [flags] <method>   (methods: time, token)")
 		os.Exit(2)
 	}
 

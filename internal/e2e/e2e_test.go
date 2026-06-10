@@ -119,6 +119,9 @@ func TestEndToEnd(t *testing.T) {
 
 		resp := callRPC(t, serverAddr, "time", tok.AccessToken)
 		assertUser(t, resp, testUser)
+
+		// The "token" method echoes the verified claims back.
+		assertClaimsUser(t, callRPC(t, serverAddr, "token", tok.AccessToken), testUser)
 	})
 
 	t.Run("DeviceFlow", func(t *testing.T) {
@@ -409,6 +412,25 @@ func assertUser(t *testing.T, resp rpc.Response, want string) {
 	}
 	if result["time"] == "" || result["time"] == nil {
 		t.Fatalf("missing time in result: %#v", result)
+	}
+}
+
+// assertClaimsUser checks that a "token"-method response is the raw claims map
+// and that its email claim identifies the expected user.
+func assertClaimsUser(t *testing.T, resp rpc.Response, want string) {
+	t.Helper()
+	if resp.Error != nil {
+		t.Fatalf("unexpected error response: [%d] %s", resp.Error.Code, resp.Error.Message)
+	}
+	claims, ok := resp.Result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("result is not a claims object: %#v", resp.Result)
+	}
+	if got := claims["email"]; got != want {
+		t.Fatalf("token claims email = %v, want %v", got, want)
+	}
+	if claims["sub"] == nil || claims["sub"] == "" {
+		t.Fatalf("token claims missing sub: %#v", claims)
 	}
 }
 

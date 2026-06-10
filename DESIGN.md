@@ -480,8 +480,27 @@ Rejection:
 { "jsonrpc": "2.0", "id": 1, "error": { "code": -32001, "message": "unauthorized: token is expired" } }
 ```
 
-The only method today is `time`, which returns the current time in RFC 3339
-format together with the authenticated user.
+Two methods, both requiring a valid token:
+
+- **`time`** — returns the current time in RFC 3339 format together with the
+  authenticated user (email, else subject).
+- **`token`** — echoes back the **verified token claims** as the result object:
+  whatever the provider put in the token, e.g. `sub`, `email`, `name`, `groups`,
+  plus the standard `iss`/`aud`/`exp`/`iat`. It is a diagnostic: it confirms auth
+  is working *and* shows exactly what the server sees, which is the natural place
+  to read a `groups` claim for authorization (see "Authentication backends").
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "result": {
+  "sub": "08a8684b-…", "email": "alice@example.com", "name": "Alice",
+  "groups": ["engineering"], "iss": "http://127.0.0.1:5556/dex",
+  "aud": "oidc-experiment-api", "exp": 1749481321 } }
+```
+
+The server only returns claims for a token that already passed verification, so
+`token` is also a quick way to confirm a login succeeded. (Which claims appear
+depends on the scopes the client requested and what the backend supplies —
+`groups` only shows up with a group-aware backend and the `groups` scope.)
 
 ## Transport security (TLS)
 

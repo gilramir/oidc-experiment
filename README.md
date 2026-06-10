@@ -94,12 +94,21 @@ The first run logs you in and caches tokens at
 `~/.config/oidc-experiment/token.json`. Subsequent runs reuse the cached token
 and refresh it silently when it expires (10 min in this config).
 
+Two methods are available: `time` (above) and `token`, which echoes back the
+verified claims the server read from your token — handy for confirming auth works
+and seeing exactly what's inside (`sub`, `email`, `name`, `groups`, …):
+
+```sh
+go run ./cmd/client token
+```
+
 ## Useful flags
 
 ```sh
 go run ./cmd/client --login  time     # force a fresh interactive login
 go run ./cmd/client --logout          # delete the cached token
 go run ./cmd/client --auth=device time
+go run ./cmd/client token             # dump the verified token claims
 go run ./cmd/server  --port 9000 --issuer http://127.0.0.1:5556/dex
 ```
 

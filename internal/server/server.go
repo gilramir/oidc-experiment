@@ -75,7 +75,7 @@ func (s *Server) Handle(conn net.Conn) {
 	}
 	resp := rpc.Response{JSONRPC: "2.0", ID: req.ID}
 
-	user, err := s.authenticate(req.Token)
+	claims, err := s.authenticate(req.Token)
 	if err != nil {
 		resp.Error = &rpc.Error{Code: rpc.CodeUnauthorized, Message: "unauthorized: " + err.Error()}
 		writeResponse(conn, resp)
@@ -86,35 +86,46 @@ func (s *Server) Handle(conn net.Conn) {
 	case "time":
 		resp.Result = map[string]interface{}{
 			"time": time.Now().Format(time.RFC3339),
-			"user": user,
+			"user": identity(claims),
 		}
+	case "token":
+		// Echo back the verified token claims (sub, email, name, groups, …) so a
+		// user can confirm auth works and inspect exactly what the provider put
+		// in the token.
+		resp.Result = claims
 	default:
 		resp.Error = &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "method not found: " + req.Method}
 	}
 	writeResponse(conn, resp)
 }
 
-// authenticate verifies the access token and returns a human-readable identity
-// (email if present, else subject). An empty or invalid token is an error.
-func (s *Server) authenticate(token string) (string, error) {
+// authenticate verifies the access token and returns all of its claims. An empty
+// or invalid token is an error.
+func (s *Server) authenticate(token string) (map[string]interface{}, error) {
 	if token == "" {
-		return "", fmt.Errorf("no token supplied")
+		return nil, fmt.Errorf("no token supplied")
 	}
 	verified, err := s.verifier.Verify(context.Background(), token)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var claims struct {
-		Email   string `json:"email"`
-		Subject string `json:"sub"`
-	}
+	var claims map[string]interface{}
 	if err := verified.Claims(&claims); err != nil {
-		return "", fmt.Errorf("parse claims: %w", err)
+		return nil, fmt.Errorf("parse claims: %w", err)
 	}
-	if claims.Email != "" {
-		return claims.Email, nil
+	return claims, nil
+}
+
+// identity reduces a token's claims to a human-readable identity: the email if
+// present, else the subject.
+func identity(claims map[string]interface{}) string {
+	if email, ok := claims["email"].(string); ok && email != "" {
+		return email
 	}
-	return verified.Subject, nil
+	if sub, ok := claims["sub"].(string); ok {
+		return sub
+	}
+	return ""
 }
 
 func writeResponse(conn net.Conn, resp rpc.Response) {
