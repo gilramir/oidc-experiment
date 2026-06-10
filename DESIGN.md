@@ -207,6 +207,33 @@ a user who runs the CLI at least every 90 days (and within ~165 days of first
 login) never sees a browser again — the production pattern. Raising `idTokens`
 from `10m` to `1h` would make the numbers realistic outright.
 
+#### Who actually sets these lifetimes (Okta)
+
+In this experiment **we** set the lifetimes, because we own `dex/config.yaml`. In
+a real Okta deployment that file belongs to your IT/IAM team, and the split of
+control matters:
+
+- **The authorization server (Okta) sets every lifetime.** Access-token and
+  refresh-token lifetimes are configured per **access-policy rule** on the Okta
+  authorization server (Security → API → Authorization Servers → Access Policies),
+  and changing them requires admin rights. The ID token is fixed at 1 hour and is
+  not configurable. None of this is in the gift of the application developer.
+- **The resource server (our `cmd/server`) gets no say.** It only *verifies* the
+  `exp` Okta already stamped — exactly what `internal/server` does via go-oidc. If
+  you need shorter effective sessions than Okta grants, the only server-side lever
+  is to be *stricter* than the token (e.g. additionally reject by `iat` age); you
+  can never extend a lifetime, only shorten its acceptance.
+- **The client (our `cmd/client`) influences only indirectly.** The scopes/audience
+  it requests select *which* access-policy rule applies, and different rules can
+  carry different lifetimes — so the client can land on a longer- or shorter-lived
+  token, but only among options the admins have already defined. The client also
+  owns the *refresh cadence* (whether it requests `offline_access` and how often it
+  refreshes), not the token's stamped lifetime.
+
+Caveat: this assumes a **custom authorization server** (Okta Developer/Org editions
+with API Access Management). The default "org authorization server" exposes fewer
+lifetime knobs — confirm with your Okta admins which one you'll be issued against.
+
 ### Where tokens are stored
 
 A single JSON file under the user's config directory, written with `0600`
