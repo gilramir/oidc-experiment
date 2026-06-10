@@ -665,6 +665,52 @@ per-request dependency on the provider. Introspection would be the natural chang
 if the requirement shifted to *immediate* revocation, or if the provider were
 configured to issue opaque tokens.
 
+## Security considerations
+
+A roundup of the security-relevant decisions made throughout this document, in
+one place. The first table is what the design actively defends against; the
+second is what is deliberately simplified and what production would add.
+
+### What the design protects against
+
+| Threat | How it's handled | See |
+| --- | --- | --- |
+| Forged or tampered tokens | Signature verified against the provider's JWKS | Server-side verification |
+| Token from another issuer | `iss` must match the configured issuer | Server-side verification |
+| Token minted for another party | `aud` must contain this server's API audience | Token audience |
+| Expired / stale tokens | `exp` checked; short (10 min) lifetimes bound exposure | Token management |
+| Anonymous access | Missing or unparseable token is rejected (`-32001`) | Server-side verification |
+| Client-secret leakage | Public client + **PKCE** — no secret is shipped | The two login flows / Configuring the client |
+| Auth-code interception / CSRF | PKCE verifier + random `state` on the auth-code flow | The two login flows |
+| Token theft from disk | Token cache written `0600`, user-only | Token management |
+| Idle-connection resource exhaustion | Per-connection read deadline (`ReadTimeout`, 5 s) | Server-side verification |
+| Tokens sniffed/replayed on the wire | TLS recommended off-loopback (here: loopback only) | Transport security (TLS) |
+
+### Deliberate simplifications (and production hardening)
+
+- **Plain TCP, no TLS.** Acceptable only because everything is on loopback. A real
+  deployment puts the server behind TLS and points the client at `https://` — see
+  Transport security (TLS).
+- **No revocation before expiry.** Local JWT validation can't detect a token
+  revoked mid-lifetime. Mitigated by short access tokens plus a revocable refresh
+  token; use introspection if *immediate* revocation is required — see Token
+  introspection and revocation.
+- **Audience doesn't separate access from ID tokens.** Dex stamps the same `aud`
+  on both, so audience alone won't reject an ID token presented as an access
+  token. A fuller solution checks a token-type marker or introspects — see Token
+  audience.
+- **Token cache is a plaintext file.** Fine for a single-user host; the production
+  upgrade is the OS keychain (a drop-in replacement for the `Store` type) — see
+  Token management.
+- **Authentication only, no authorization.** Any valid user is allowed; there is
+  no scope/role/permission check. Adding one (e.g. requiring a scope claim) is the
+  natural next layer.
+- **ROPC (password grant) intentionally unused.** Deprecated and first-party-only
+  — see CLI login: terminal vs. browser.
+- **No rate limiting** beyond the read deadline, and **one request per
+  connection**; a real service would add connection/request limits and graceful
+  shutdown.
+
 ## Path to production (Okta)
 
 Nothing structural changes:
