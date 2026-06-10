@@ -272,6 +272,55 @@ serves both login flows because both just produce an `*oauth2.Token`.
 `client --login` forces a fresh interactive login (ignoring the cache);
 `client --logout` deletes `token.json`.
 
+## Configuring the client
+
+The client needs more than the server, because it actually performs the OAuth
+exchange (the server only validates the result). But it still ships **no secret**.
+The configuration lives in `cmd/client/main.go` and `auth.Config`:
+
+1. **The issuer URL** (`--issuer`). The same anchor as the server. From discovery
+   the client learns the endpoints it *drives*:
+   - **`authorization_endpoint`** — where to send the user to log in (auth-code);
+   - **`token_endpoint`** — where to exchange the code, and where to **refresh**;
+   - **`device_authorization_endpoint`** — where to start the device flow.
+2. **A client id** (`--client-id`, `oidc-experiment-cli`) — its registered
+   identity, sent on every request so the provider knows which app is asking.
+3. **A redirect URI** (`http://127.0.0.1:5555/callback`) — **auth-code flow only**.
+   The loopback URL the provider returns the browser to; it must exactly match one
+   registered at the provider. The **device flow needs no redirect URI**.
+4. **Scopes** (`openid profile email offline_access` + the audience scope):
+   - `openid` makes it an OIDC request;
+   - **`offline_access`** is what yields a **refresh token** — without it, every
+     expiry becomes a fresh browser login;
+   - `profile` / `email` populate identity claims;
+   - the cross-client audience scope (built from `--audience`) so the token is
+     minted for the resource server (see "Token audience" above).
+
+What it does **not** need:
+
+- **No client secret.** The CLI is a **public client** and uses **PKCE** instead;
+  PKCE proves it is the same app that started the flow, so no shipped secret is
+  required. A *confidential* client (a server-side web app) would need a secret
+  here — a CLI should not.
+- **No token-validation logic** — the client consumes tokens; only the server
+  verifies them.
+
+**Prerequisite — registration.** The client id *and* its redirect URI must be
+**pre-registered at the provider** (`dex/config.yaml` `staticClients`; an app
+registration in Okta). An unknown client id or an unregistered redirect URI is
+rejected — this is the "Unregistered redirect_uri" wall the device flow hits if
+its callback isn't registered.
+
+Implicit requirements:
+
+- **A way to complete the login** — a browser on the machine (auth-code), or the
+  ability to display a URL + code for the user to enter elsewhere (device).
+- **Network reachability to the issuer** — for discovery, the token exchange, and
+  every refresh.
+- **Somewhere to cache tokens** — client-side state
+  (`~/.config/oidc-experiment/token.json`), not provider info, but required for
+  refresh to work across runs.
+
 ## Configuring the server
 
 Because the server validates tokens **locally**, it needs surprisingly little —
