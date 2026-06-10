@@ -33,7 +33,9 @@ go vet ./... && go fmt ./...
 Running anything end-to-end requires **Dex** (the OIDC provider) on `PATH` or in
 `~/go/bin`. `go install ...dex@latest` does NOT work (Dex uses `+incompatible` v2 tags);
 build a tagged checkout instead — see README.md "Prerequisites". Start it with
-`dex serve dex/config.yaml`. Test login: **alice@example.com** / **password**.
+`./scripts/run-dex.sh` (static passwords; add `ldap` to use the
+`dex/config-ldap.yaml` LDAP-backend template). Test login:
+**alice@example.com** / **password**.
 
 The e2e test (`internal/e2e`) launches a real Dex on random ports, runs the server
 in-process, and drives both login flows with a headless "robot browser" that submits

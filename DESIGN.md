@@ -35,6 +35,45 @@ focuses on.
 - **Server** (`cmd/server`) is a *resource server*. It owns no user database and
   performs no login. It only validates tokens.
 
+## Authentication backends (Dex connectors)
+
+Dex is a front end, not an identity store. It speaks OIDC/OAuth2 to our client
+and delegates the *actual* authentication to a pluggable backend it calls a
+**connector** (LDAP, SAML, GitHub/Google/Microsoft, a generic upstream OIDC
+provider, …). Swapping the backend is a Dex-side change only: the issuer URL and
+client ids the client/server know never move.
+
+This repo ships two configs and a launcher:
+
+| Backend | Config | Launch |
+| --- | --- | --- |
+| Static password (default) | `dex/config.yaml` | `./scripts/run-dex.sh` (or `static`) |
+| LDAP directory | `dex/config-ldap.yaml` | `./scripts/run-dex.sh ldap` |
+
+The default uses Dex's built-in `staticPasswords` (alice@example.com) so the
+experiment runs with no external dependencies. `dex/config-ldap.yaml` is a
+ready-to-fill template for a site that has a real LDAP/AD server — it is *not*
+enabled by default and has placeholder values.
+
+**How the LDAP connector authenticates.** Dex binds to the directory with a
+read-only service account, searches for the user who is logging in, then
+re-binds *as that user* with the password they typed — a successful bind is the
+proof. Optional group lookup is surfaced as a `groups` claim (only if the client
+also requests the `groups` scope, which this CLI does not by default).
+
+Because verification is a bind against a typed password, **LDAP only works with
+flows where Dex itself collects the password** — the browser-based auth-code
+login form and the device-flow verification page. That is exactly what this CLI
+drives. It does *not* add a non-interactive password-grant or passthrough path;
+the password is still entered at Dex's page, never handled by our client (see
+"CLI login: terminal vs. browser"). Dex's own `storage` stays `memory` either
+way — that holds Dex's auth codes and refresh tokens, not user identities, which
+live in LDAP.
+
+The placeholder fields (host/TLS, service-account bind, `userSearch`,
+`groupSearch`, and the Active-Directory attribute equivalents) are documented
+inline in `dex/config-ldap.yaml`.
+
 ## Why the access token (not the ID token)
 
 OIDC produces two JWTs:

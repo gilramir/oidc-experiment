@@ -20,7 +20,9 @@ internal/rpc    shared request/response types
 internal/token  on-disk token store + auto-refreshing token source
 internal/auth   OIDC provider setup + the two login flows
 internal/e2e    end-to-end test (launches Dex, drives both flows)
-dex/config.yaml Dex provider configuration
+dex/config.yaml Dex provider configuration (static passwords, default)
+dex/config-ldap.yaml  Dex configuration template for an LDAP backend
+scripts/run-dex.sh    launch Dex with either config
 ```
 
 ## Prerequisites
@@ -49,9 +51,14 @@ Use three terminals.
 **1. Start Dex** (the OIDC provider):
 
 ```sh
-dex serve dex/config.yaml
+./scripts/run-dex.sh          # static passwords (default); same as: dex serve dex/config.yaml
 # or the docker command above
 ```
+
+To authenticate against a real LDAP/AD directory instead, fill in
+`dex/config-ldap.yaml` (placeholders are documented inline) and start Dex with
+`./scripts/run-dex.sh ldap`. The client and server are unchanged — only the Dex
+backend differs. See [DESIGN.md](DESIGN.md#authentication-backends-dex-connectors).
 
 **2. Start the server:**
 

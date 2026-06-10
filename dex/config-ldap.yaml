@@ -1,0 +1,119 @@
+# Dex configuration for the OIDC experiment, using an LDAP backend.
+#
+# Identical to dex/config.yaml EXCEPT that authentication is delegated to an
+# LDAP directory instead of the built-in static password. Use this at a site
+# where you actually have an LDAP/AD server:
+#
+#   ./scripts/run-dex.sh ldap          # or: dex serve dex/config-ldap.yaml
+#
+# Everything above the connector is byte-for-byte the same as config.yaml: the
+# client and server only know the issuer URL and client ids, so switching the
+# authentication backend is purely a Dex-side change — no client/server edits.
+
+issuer: http://127.0.0.1:5556/dex
+
+# In-memory storage holds Dex's OWN state (auth codes, refresh tokens), not user
+# identities — those live in LDAP. Memory is fine for the experiment.
+storage:
+  type: memory
+
+web:
+  http: 127.0.0.1:5556
+
+# Token lifetimes — same as config.yaml; see DESIGN.md "Lifetimes".
+expiry:
+  idTokens: "10m"
+  refreshTokens:
+    reuseInterval: "30s"
+    validIfNotUsedFor: "2160h" # 90 days idle limit
+    absoluteLifetime: "3960h"  # ~165 day hard cap
+
+oauth2:
+  responseTypes: ["code"]
+  skipApprovalScreen: true
+
+# Same two clients as config.yaml: the public CLI, and the resource server whose
+# id becomes the token audience. See DESIGN.md "Token audience".
+staticClients:
+  - id: oidc-experiment-cli
+    name: 'OIDC Experiment CLI'
+    public: true
+    redirectURIs:
+      - 'http://127.0.0.1:5555/callback'
+      - '/device/callback'
+
+  - id: oidc-experiment-api
+    name: 'OIDC Experiment API (resource server)'
+    secret: unused-the-api-never-runs-a-flow
+    redirectURIs: []
+    trustedPeers:
+      - oidc-experiment-cli
+
+# --- LDAP backend -----------------------------------------------------------
+# How it works: Dex binds to the directory with a read-only service account,
+# searches for the user who is logging in, then RE-BINDS as that user with the
+# password they typed on Dex's login page to verify it. Optional group lookup
+# becomes a `groups` claim.
+#
+# Because the password is verified by a bind, LDAP only works with flows where
+# Dex collects the password itself — the browser-based auth-code login form and
+# the device-flow verification page. That is exactly what this CLI does; there
+# is still no password-grant / passthrough path (see DESIGN.md "CLI login").
+#
+# Replace every <PLACEHOLDER>. The example attribute names below (uid, mail, cn,
+# memberUid) match OpenLDAP/posixGroup; Active Directory equivalents are noted
+# inline.
+connectors:
+  - type: ldap
+    id: ldap
+    name: LDAP
+    config:
+      # Host and port. :636 = LDAPS, :389 = plaintext or STARTTLS.
+      host: <LDAP_HOST>:636
+
+      # TLS. Prefer LDAPS (:636 above) or STARTTLS in production; the insecure
+      # options are for local testing only.
+      #   insecureNoSSL: true       -> plaintext :389, no TLS at all (dev only)
+      #   startTLS: true            -> connect plaintext, then upgrade to TLS
+      #   insecureSkipVerify: true  -> don't verify the server cert (dev only)
+      #   rootCA: /etc/dex/ldap-ca.pem   (or rootCAData: <base64-encoded PEM>)
+      insecureNoSSL: false
+      # startTLS: false
+      # insecureSkipVerify: false
+      # rootCA: /etc/dex/ldap-ca.pem
+
+      # Read-only service account Dex binds as to run the user search. Omit both
+      # bindDN and bindPW to attempt an anonymous search (rarely permitted).
+      # Dex expands environment variables in this file, so you can keep the
+      # password out of the config:  bindPW: $LDAP_BINDPW
+      bindDN: <SERVICE_ACCOUNT_DN>       # e.g. cn=dex-readonly,ou=svc,dc=example,dc=com
+      bindPW: <SERVICE_ACCOUNT_PASSWORD> # or: $LDAP_BINDPW
+
+      # Label shown above the username box on Dex's login page.
+      usernamePrompt: Username
+
+      # How to locate the user that is logging in.
+      userSearch:
+        baseDN: <USERS_BASE_DN>            # e.g. ou=people,dc=example,dc=com
+        filter: "(objectClass=person)"     # AD: (objectClass=user)
+        username: uid                      # attr the user types; AD: sAMAccountName
+        idAttr: uid                        # stable value -> OIDC `sub`; AD: objectGUID
+        emailAttr: mail
+        nameAttr: cn                       # AD: displayName
+        # preferredUsernameAttr: uid       # optional -> preferred_username claim
+
+      # OPTIONAL group membership -> `groups` claim. Delete this block if unused.
+      # NOTE: the claim is only emitted if the client also requests the "groups"
+      # scope; this experiment's CLI does not request it by default.
+      groupSearch:
+        baseDN: <GROUPS_BASE_DN>           # e.g. ou=groups,dc=example,dc=com
+        filter: "(objectClass=posixGroup)" # AD: (objectClass=group)
+        # Join a user to their groups. For posixGroup, the group's memberUid
+        # attribute holds the user's uid:
+        userMatchers:
+          - userAttr: uid                  # value from the user entry...
+            groupAttr: memberUid           # ...matched against this group attr
+            # Active Directory equivalent:
+            #   - userAttr: DN
+            #     groupAttr: member
+        nameAttr: cn                       # group name placed in `groups`
