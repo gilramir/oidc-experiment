@@ -105,6 +105,22 @@ and seeing exactly what's inside (`sub`, `email`, `name`, `groups`, …):
 go run ./cmd/client token
 ```
 
+Expected output (the exact claims depend on your provider):
+
+```json
+{
+  "iss": "http://127.0.0.1:5556/dex",
+  "sub": "CgVhbGljZRIFbG9jYWw",
+  "aud": "oidc-experiment-api",
+  "exp": 1749480721,
+  "iat": 1749480121,
+  "email": "alice@example.com",
+  "email_verified": true,
+  "name": "alice",
+  "groups": ["admins"]
+}
+```
+
 ## Useful flags
 
 ```sh
