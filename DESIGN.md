@@ -654,6 +654,130 @@ exposed as `--auth=password` and clearly labelled deprecated / first-party-only,
 so the experiment documents *why* it's normally avoided. It is intentionally not
 implemented today.
 
+## Service / role accounts (machine-to-machine)
+
+Everything above assumes a **human**: the auth-code and device flows both end at a
+login page somebody fills in. But automation — CI jobs, cron tasks, daemons, one
+service calling another — has no human and no browser. How does a "role" account
+authenticate?
+
+The answer is a different OAuth2 grant whose whole point is that **there is no
+user**: the **Client Credentials grant** (RFC 6749 §4.4). The automation itself is
+the principal. There is no login ceremony to delegate, so there is no browser, no
+redirect, and no device code — the client authenticates directly to the token
+endpoint with its own credentials:
+
+```
+POST /token
+grant_type=client_credentials
+&client_id=oidc-experiment-bot
+&client_secret=...                                 # or a signed JWT assertion (below)
+&scope=audience:server:client_id:oidc-experiment-api
+```
+
+What comes back differs from the human flows in two ways that ripple through the
+rest of this design:
+
+- **No `id_token`.** An ID token answers "who is the logged-in *user*?" — and there
+  isn't one. The access token's `sub` is the **client itself** (`oidc-experiment-bot`),
+  not a person. (So the server's "identity" for a role account is the client id, not
+  an `email` — see "Authorization" below.)
+- **No refresh token.** Refresh tokens exist to avoid re-prompting a human. A
+  machine can just ask for a new access token whenever it needs one — re-minting is
+  a cheap, stateless POST. Requesting `offline_access` here would be pointless.
+
+### How it maps onto this experiment
+
+The key property is that **the server does not change at all.** `internal/server`
+only checks signature / issuer / audience / expiry; it never cares *which grant*
+minted the token. A client-credentials access token from the same issuer carrying
+`aud = oidc-experiment-api` validates by the identical code path as a human's
+token. Only the *client*'s token-acquisition step is new.
+
+Concretely, the repo gains a third login mode alongside `authcode` and `device`:
+
+- **`internal/auth/clientcreds.go`** — `ClientCredentials(...)`, a thin wrapper over
+  `golang.org/x/oauth2/clientcredentials`. Like `Device` and `AuthCode` it returns
+  an `*oauth2.Token`; unlike them it needs a **client secret**.
+- **`cmd/client`** — `--auth=client-credentials`. It reads the secret from
+  `OIDC_CLIENT_SECRET` (never a flag — secrets do not belong in argv or shell
+  history), requests only the audience scope (no `openid`/`offline_access`), and
+  **skips `internal/token` entirely**: there is no refresh token to persist and no
+  per-user state worth caching, so it mints a fresh token each run rather than
+  writing one to `~/.config`.
+
+```sh
+OIDC_CLIENT_SECRET=… go run ./cmd/client \
+    --auth=client-credentials --client-id=oidc-experiment-bot token
+```
+
+The **audience subtlety is unchanged**: the bot must still get `aud =
+oidc-experiment-api` onto its token, so `dex/config.yaml` lists `oidc-experiment-bot`
+as a `trustedPeer` of `oidc-experiment-api`, exactly as it does for the CLI (see
+"Token audience" above).
+
+### The Dex caveat (this grant does not run against Dex)
+
+There is one blunt limitation, and it is worth stating plainly because it bites
+immediately: **mainline Dex does not implement the client_credentials grant.** Its
+discovery document advertises only `authorization_code`, `refresh_token`,
+`device_code`, and `token-exchange` (plus `implicit`/`password` conditionally), and
+no config can add to that set — it is hard-coded in Dex's server. Running the
+command above against the bundled Dex returns `unsupported_grant_type` (the client
+catches this and prints a hint pointing here).
+
+So this flow is in the same category as Okta's Authentication API (Option B under
+"CLI login"): the code and the `oidc-experiment-bot` registration are **correct for
+a provider that supports the grant** — Okta, Keycloak, Zitadel, Auth0, Entra — and
+switching to one is the usual config swap (issuer + client id + secret). Dex simply
+cannot demo it. The one machine-to-machine grant Dex *does* support is **token
+exchange** (next), which is the foundation of the modern, secretless approach.
+
+### The hard part is the secret, not the grant
+
+Client Credentials is trivial mechanically. The real problem of role accounts is
+**where the credential lives and how the workload proves it is allowed to hold it.**
+Roughly in increasing order of safety:
+
+| Approach | How it works | Good for |
+| --- | --- | --- |
+| **Static client secret** | Shared secret in a vault / env var / k8s Secret (what `--auth=client-credentials` uses) | Simple CI bots, on-prem |
+| **`private_key_jwt`** | The client signs a short-lived JWT assertion with a private key instead of sending a shared secret; only the *public* key is registered at the provider. No secret ever crosses the wire; the key can sit in an HSM. | Avoiding a shared secret; higher-assurance M2M |
+| **Workload identity federation** | *No stored secret at all.* The platform (GitHub Actions, GCP, AWS, Kubernetes, SPIFFE/SPIRE) issues the workload a short-lived OIDC token proving its identity; the provider trusts that issuer and exchanges it for an access token via **token exchange (RFC 8693)**. | CI/CD and cloud workloads — the current best practice |
+
+That last row is why token exchange matters: it lets automation hold **no
+long-lived credential**. The runner proves its identity to *its own* platform, gets
+a short-lived JWT, and trades it for a token from the OIDC provider. GitHub Actions
+OIDC and SPIFFE are the common implementations. Dex supports the token-exchange
+grant, but a working demo needs an **upstream connector** to validate the incoming
+subject token, which the bundled static-password setup doesn't have — so it is
+documented here rather than wired up.
+
+### On Okta specifically
+
+In the real-world target, role accounts are **"service apps"**: applications with
+the Client Credentials grant enabled, authenticating with either a client secret or
+`private_key_jwt`. Two Okta-specific wrinkles, consistent with the lifetime/audience
+notes elsewhere in this doc:
+
+- Client Credentials generally requires a **custom authorization server** (API
+  Access Management), not the org authorization server — the same prerequisite the
+  audience and lifetime sections call out.
+- The audience comes from the custom authorization server's configuration, not
+  Dex's `audience:server:client_id:` cross-client scope; the `--audience`/`scope`
+  the client requests selects it, and the server's expected-audience check is
+  unchanged (see "Path to production").
+
+### Authorization
+
+Authentication is only half the story for a role account. Because the token's
+identity is a **client id**, not a user `email`, any access decision keys off the
+client (or its granted scopes), not a person. This experiment does no authorization
+at all — any valid token is accepted (see "Authentication only, no authorization"
+under Security considerations) — but a role account is the textbook case where you
+*would* add one: e.g. require a specific scope, or allow only certain `sub`/`azp`
+values. That is the natural next layer on top of this flow.
+
 ## Token introspection and revocation
 
 A question this experiment raises: once the server has validated a token, can it
@@ -792,6 +916,9 @@ second is what is deliberately simplified and what production would add.
   natural next layer.
 - **ROPC (password grant) intentionally unused.** Deprecated and first-party-only
   — see CLI login: terminal vs. browser.
+- **Role-account secret is a static, in-repo client secret.** Fine for the
+  experiment; production uses a vault, `private_key_jwt`, or secretless workload
+  identity federation — see Service / role accounts.
 - **No rate limiting** beyond the read deadline, and **one request per
   connection**; a real service would add connection/request limits and graceful
   shutdown.

@@ -29,6 +29,13 @@ go run ./cmd/client --auth=device time    # device grant (prints URL + code)
 go run ./cmd/client --login time          # force a fresh interactive login
 go run ./cmd/client --logout              # delete cached token
 
+# Machine-to-machine (role/service accounts), no user/browser. NOTE: mainline Dex
+# does NOT support the client_credentials grant, so this returns
+# unsupported_grant_type against the bundled Dex — it is correct only against a
+# provider that does (Okta/Keycloak/…). See DESIGN.md "Service / role accounts".
+OIDC_CLIENT_SECRET=… go run ./cmd/client \
+    --auth=client-credentials --client-id=oidc-experiment-bot time
+
 go test ./...                             # unit tests + Dex e2e test
 go test ./... -short                      # unit tests only (skips Dex e2e)
 go test ./internal/server -run TestName   # a single test
@@ -50,10 +57,13 @@ Dex's login form. It auto-skips when the `dex` binary is absent or under `-short
 
 The token is the spine of the whole system; trace it through these packages:
 
-- **`internal/auth`** — OIDC discovery (`auth.go`) plus the two interactive login
-  flows, each returning an `*oauth2.Token`: `authcode.go` (Authorization Code + PKCE,
-  via a throwaway loopback HTTP server) and `device.go` (Device Authorization Grant,
-  polling). Everything downstream is identical regardless of which flow ran.
+- **`internal/auth`** — OIDC discovery (`auth.go`) plus the login flows, each
+  returning an `*oauth2.Token`: `authcode.go` (Authorization Code + PKCE, via a
+  throwaway loopback HTTP server) and `device.go` (Device Authorization Grant,
+  polling) are the two *interactive* (human) flows; `clientcreds.go` (Client
+  Credentials) is the non-interactive machine-to-machine flow for role accounts —
+  no user, no browser, no refresh token (Dex can't run it; see DESIGN.md).
+  Everything downstream is identical regardless of which flow ran.
 - **`internal/token`** — on-disk token store (`~/.config/oidc-experiment/token.json`,
   mode 0600) and a `TokenSource` that wraps oauth2's auto-refreshing source so any
   refreshed token is written back to disk. The on-disk struct is custom (not a marshalled

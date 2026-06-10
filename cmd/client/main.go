@@ -5,6 +5,12 @@
 // expired). Only when there is no usable token does it start an interactive
 // login, using either the Authorization Code + PKCE flow (default) or the
 // Device Authorization Grant (--auth=device).
+//
+// For automation ("role" accounts with no human at a browser) it also supports
+// the Client Credentials grant (--auth=client-credentials): the client
+// authenticates with its own secret (OIDC_CLIENT_SECRET) and gets a token whose
+// subject is the client itself. That path is stateless — no browser, no token
+// cache, no refresh — see DESIGN.md "Service / role accounts".
 package main
 
 import (
@@ -16,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gilramir/oidc-experiment/internal/auth"
@@ -39,7 +46,7 @@ const (
 )
 
 func main() {
-	authMode := flag.String("auth", "authcode", "login flow: authcode | device")
+	authMode := flag.String("auth", "authcode", "login flow: authcode | device | client-credentials")
 	addr := flag.String("addr", "127.0.0.1:8888", "server address")
 	issuer := flag.String("issuer", defaultIssuer, "OIDC issuer URL")
 	clientID := flag.String("client-id", defaultClientID, "OIDC client id")
@@ -68,15 +75,25 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// The interactive (human) flows request OIDC identity scopes plus a refresh
+	// token. The client-credentials (service-account) flow has no user identity
+	// to assert and nothing to refresh, so it asks only for the resource-server
+	// audience — requesting openid/offline_access there would be meaningless.
+	scopes := []string{
+		oidc.ScopeOpenID, "profile", "email",
+		oidc.ScopeOfflineAccess,            // required to receive a refresh token
+		crossClientScopePrefix + *audience, // make the resource server the token's audience
+	}
+	if *authMode == "client-credentials" {
+		scopes = []string{crossClientScopePrefix + *audience}
+	}
+
 	cfg := auth.Config{
 		Issuer:      *issuer,
 		ClientID:    *clientID,
 		RedirectURL: redirectURL,
-		Scopes: []string{
-			oidc.ScopeOpenID, "profile", "email",
-			oidc.ScopeOfflineAccess,            // required to receive a refresh token
-			crossClientScopePrefix + *audience, // make the resource server the token's audience
-		},
+		Scopes:      scopes,
 	}
 
 	_, oauthCfg, err := cfg.Provider(ctx)
@@ -104,6 +121,25 @@ func main() {
 // obtainAccessToken returns a valid access token, refreshing or logging in as
 // needed.
 func obtainAccessToken(ctx context.Context, store *token.Store, oauthCfg *oauth2.Config, mode string, force bool) (string, error) {
+	// Client credentials is a stateless machine-to-machine flow: no user, no
+	// browser, no refresh token, and so no on-disk cache. Mint a fresh token
+	// straight from the token endpoint each run. The secret is read from the
+	// environment, never a flag, so it does not land in shell history or argv.
+	if mode == "client-credentials" {
+		secret := os.Getenv("OIDC_CLIENT_SECRET")
+		tok, err := auth.ClientCredentials(ctx, oauthCfg.Endpoint.TokenURL, oauthCfg.ClientID, secret, oauthCfg.Scopes)
+		if err != nil {
+			// Mainline Dex does not implement this grant; a real provider (Okta,
+			// Keycloak, …) does. Make that failure mode legible instead of cryptic.
+			if strings.Contains(err.Error(), "unsupported_grant_type") {
+				return "", fmt.Errorf("%w\n\nhint: Dex does not support the client_credentials grant; "+
+					"point --issuer at a provider that does (see DESIGN.md \"Service / role accounts\")", err)
+			}
+			return "", err
+		}
+		return tok.AccessToken, nil
+	}
+
 	if !force {
 		if cached, err := store.Load(); err == nil {
 			// The persisting source returns the cached token, or silently
@@ -124,7 +160,7 @@ func obtainAccessToken(ctx context.Context, store *token.Store, oauthCfg *oauth2
 	case "authcode":
 		tok, err = auth.AuthCode(ctx, oauthCfg, presentAuthURL)
 	default:
-		return "", fmt.Errorf("unknown --auth mode %q (use authcode or device)", mode)
+		return "", fmt.Errorf("unknown --auth mode %q (use authcode, device, or client-credentials)", mode)
 	}
 	if err != nil {
 		return "", err

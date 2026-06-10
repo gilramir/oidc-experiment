@@ -56,6 +56,29 @@ staticClients:
     redirectURIs: []
     trustedPeers:
       - oidc-experiment-cli
+      # The automation client below is also trusted to request aud=...-api, so a
+      # service account's client-credentials token is addressed to the server.
+      - oidc-experiment-bot
+
+  # A confidential (has-secret) client for machine-to-machine / "role" accounts:
+  # automation that runs with no human and no browser, via --auth=client-credentials.
+  # This is the registration *shape* a service account needs against a real
+  # provider (Okta/Keycloak/Zitadel): a client id + secret (the human CLI above
+  # is public + PKCE and ships no secret), trusted to request aud=...-api.
+  #
+  # IMPORTANT: mainline Dex does NOT implement the client_credentials grant (only
+  # authorization_code / refresh_token / device_code / token-exchange), so against
+  # *this* provider the flow returns "unsupported_grant_type". The client and this
+  # registration are correct for a provider that supports the grant; Dex just
+  # can't demo it. See DESIGN.md "Service / role accounts (machine-to-machine)".
+  #
+  # The secret is in-repo only because this is an experiment; in production it
+  # lives in a vault / CI secret store, or is replaced by private_key_jwt or
+  # workload identity federation (no stored secret at all) — see DESIGN.md.
+  - id: oidc-experiment-bot
+    name: 'OIDC Experiment Automation (service account)'
+    secret: bot-secret-for-the-experiment-only
+    redirectURIs: []
 
 # A built-in username/password user so there's a "human" to log in as.
 # Login as alice@example.com / password
