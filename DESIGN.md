@@ -417,6 +417,56 @@ Rejection:
 The only method today is `time`, which returns the current time in RFC 3339
 format together with the authenticated user.
 
+## Transport security (TLS)
+
+This experiment sends the JSON-RPC request — **including the access token** — over
+**plain TCP**. In production that should be TLS. Here is the reasoning, and the
+cases where plaintext is acceptable.
+
+### Why TLS is recommended
+
+The access token is a **bearer token**: whoever presents it is treated as the
+user, no questions asked. Our signature/issuer/audience/expiry checks prove the
+token is *authentic*, but they cannot tell whether the *legitimate client* or an
+attacker is presenting it. So a token observed on the wire can simply be
+**replayed** until it expires (≤10 min here) and the server will accept it.
+
+Plain TCP exposes the token to anyone who can see the traffic — a host on the same
+LAN, a compromised router, anything in the path. TLS closes two holes at once:
+
+- **Confidentiality** — the channel is encrypted, so the token (and the request)
+  can't be sniffed and replayed.
+- **Server authentication** — the client verifies the server's certificate, so it
+  isn't handing its token to an impostor (a man-in-the-middle).
+
+This is not optional in the spec: RFC 6750 (OAuth 2.0 Bearer Token Usage)
+**requires** TLS whenever a bearer token is transmitted. The same applies to the
+OIDC traffic itself — the authorization code, the token exchange, and refreshes
+all carry secrets, which is why real issuer URLs are **`https://`** (OIDC requires
+it; Dex and `go-oidc` permit `http://` only for localhost, which is exactly why
+this experiment can use a plain `http://127.0.0.1` issuer).
+
+### When plaintext is OK
+
+The token only needs transport protection when it crosses a network another party
+could observe. Plaintext is acceptable when that isn't the case:
+
+- **Loopback only.** If the client, server, and provider all run on `127.0.0.1`
+  and the traffic never leaves the host, no other network host can see it. That is
+  exactly this experiment's situation, and why it skips TLS. (On a shared
+  multi-user machine, even loopback can be observable by other local users/root,
+  so this assumes a single-trust host.)
+- **TLS terminated by the infrastructure.** In a service mesh with mutual TLS, or
+  behind a localhost sidecar/proxy that adds TLS, the application speaks plaintext
+  but the wire is already protected. The app offloads transport security rather
+  than omitting it.
+- **Throwaway experiments and tests**, like this repo.
+
+The rule of thumb: **the moment the token travels over a LAN, the internet, or any
+link a third party could tap, TLS is mandatory.** This experiment uses plain TCP
+solely because everything is on loopback; promoting it to a real deployment means
+putting the server behind TLS (and pointing the client at an `https://` address).
+
 ## CLI login: terminal vs. browser
 
 A common question for a CLI like this one: **can the user just type their username
