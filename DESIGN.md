@@ -150,6 +150,63 @@ the shape is the same.
 > scope. The client always does (`cmd/client/main.go`). Without it there would be
 > nothing to refresh with, and every expiry would force a full interactive login.
 
+### Real-world lifetimes and re-authentication
+
+The values above are compressed for the experiment, but they mirror the real
+shape: a **short access token** (invisible plumbing — the client refreshes it
+silently) and a **long refresh token** (what actually decides how often a human
+must log in again through a browser).
+
+Access / ID tokens, typical production values:
+
+| Provider | Access-token lifetime |
+| --- | --- |
+| Okta | 1 hour default (≈5 min–24 h configurable) |
+| Microsoft Entra (Azure AD) | ~60–90 min (randomized) |
+| Auth0 | minutes to ~24 h, configurable |
+| Google | 1 hour |
+| AWS Cognito | 1 hour default (5 min–24 h) |
+
+High-security APIs go as low as 5–15 min: a leaked access token is only useful
+until it expires (see [INTROSPECTION.md](INTROSPECTION.md) on the revocation
+trade-off).
+
+Refresh tokens have **two clocks**, and whichever fires first ends the
+silent-refresh streak:
+
+1. **Idle / inactivity window (sliding)** — valid as long as it is *used* within
+   this period; each use resets it (especially with rotation). Commonly 14–90 days.
+2. **Absolute / maximum lifetime (hard cap)** — a wall regardless of activity.
+   Commonly 30 days to ~1 year, sometimes "unlimited."
+
+| Provider | Refresh token, typical |
+| --- | --- |
+| Okta | sliding 30–90 days; absolute cap optional (can be "unlimited" with rotation) |
+| Entra (Azure AD) | ~90-day sliding window; bounded/overridden by Conditional Access |
+| Auth0 | rotation on; idle ~15 days, absolute ~30 days (configurable) |
+| Google (installed/CLI apps) | effectively indefinite; dies on long inactivity, password change, or revoke |
+
+So a regularly used CLI can auto-refresh **silently for weeks to months** — bounded
+by the idle window if it goes unused, and by the absolute cap if one is set.
+
+A browser re-authentication is forced — regardless of those timers — by:
+
+- **Refresh token expiry** (idle or absolute) — the normal case.
+- **Revocation** — logout, "sign out everywhere," admin revoke, password change.
+- **Rotation reuse detection** — replaying an already-rotated refresh token
+  invalidates the whole chain as a theft signal. (This is why a second login
+  invalidated the first refresh token in the e2e test — Dex rotates refresh
+  tokens.)
+- **Policy / step-up auth** — Conditional Access or an MFA policy may require
+  fresh authentication every N days, or for sensitive actions, even while tokens
+  are still valid.
+- **Scope / consent changes** — requesting new scopes needs a fresh authorization.
+
+In this experiment the refresh token is **90 days idle / ~165 days absolute**, so
+a user who runs the CLI at least every 90 days (and within ~165 days of first
+login) never sees a browser again — the production pattern. Raising `idTokens`
+from `10m` to `1h` would make the numbers realistic outright.
+
 ### Where tokens are stored
 
 A single JSON file under the user's config directory, written with `0600`
