@@ -45,6 +45,18 @@ staticClients:
       # register the loopback one above, we must list this explicitly too.
       - '/device/callback'
 
+  # The resource server's identity. It never logs anyone in; it exists so the
+  # access token can carry aud=oidc-experiment-api. The CLI requests that with
+  # the scope "audience:server:client_id:oidc-experiment-api", which Dex honors
+  # only because this client lists the CLI below as a trusted peer. The secret
+  # is required for a non-public client but is never used (no flow runs here).
+  - id: oidc-experiment-api
+    name: 'OIDC Experiment API (resource server)'
+    secret: unused-the-api-never-runs-a-flow
+    redirectURIs: []
+    trustedPeers:
+      - oidc-experiment-cli
+
 # A built-in username/password user so there's a "human" to log in as.
 # Login as alice@example.com / password
 enablePasswordDB: true

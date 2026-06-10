@@ -29,7 +29,13 @@ import (
 const (
 	defaultIssuer   = "http://127.0.0.1:5556/dex"
 	defaultClientID = "oidc-experiment-cli"
+	defaultAudience = "oidc-experiment-api"
 	redirectURL     = "http://127.0.0.1:5555/callback"
+
+	// crossClientScopePrefix is Dex's way to request that the issued token's
+	// audience be a *different* registered client (our resource server) rather
+	// than the CLI itself. The target client must list the CLI as a trusted peer.
+	crossClientScopePrefix = "audience:server:client_id:"
 )
 
 func main() {
@@ -37,6 +43,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8888", "server address")
 	issuer := flag.String("issuer", defaultIssuer, "OIDC issuer URL")
 	clientID := flag.String("client-id", defaultClientID, "OIDC client id")
+	audience := flag.String("audience", defaultAudience, "API audience to request the access token for")
 	forceLogin := flag.Bool("login", false, "force a fresh interactive login")
 	logout := flag.Bool("logout", false, "delete the cached token and exit")
 	flag.Parse()
@@ -67,7 +74,8 @@ func main() {
 		RedirectURL: redirectURL,
 		Scopes: []string{
 			oidc.ScopeOpenID, "profile", "email",
-			oidc.ScopeOfflineAccess, // required to receive a refresh token
+			oidc.ScopeOfflineAccess,            // required to receive a refresh token
+			crossClientScopePrefix + *audience, // make the resource server the token's audience
 		},
 	}
 

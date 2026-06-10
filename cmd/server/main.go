@@ -16,10 +16,10 @@ import (
 func main() {
 	port := flag.Int("port", 8888, "TCP port to listen on")
 	issuer := flag.String("issuer", "http://127.0.0.1:5556/dex", "OIDC issuer URL")
-	clientID := flag.String("client-id", "oidc-experiment-cli", "expected token audience (client id)")
+	audience := flag.String("audience", "oidc-experiment-api", "required access-token audience (this resource server's id)")
 	flag.Parse()
 
-	srv, err := server.New(context.Background(), *issuer, *clientID)
+	srv, err := server.New(context.Background(), *issuer, *audience)
 	if err != nil {
 		log.Fatal(err)
 	}

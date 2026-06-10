@@ -15,7 +15,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-const testAudience = "oidc-experiment-cli"
+const testAudience = "oidc-experiment-api"
 
 // mockIDP is a minimal OIDC issuer for unit tests: it serves a discovery
 // document and a JWKS, and can mint signed JWTs with arbitrary claims (expired,

@@ -13,6 +13,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -38,9 +39,10 @@ import (
 )
 
 const (
-	clientID = "oidc-experiment-cli"
-	testUser = "alice@example.com"
-	testPass = "password"
+	clientID    = "oidc-experiment-cli"
+	apiAudience = "oidc-experiment-api"
+	testUser    = "alice@example.com"
+	testPass    = "password"
 	// bcrypt hash of testPass; matches dex/config.yaml.
 	testHash = `$2a$10$351Qx.P/23Bb5lXu2MwhB.7YhfDzf2OPIW3kZurT34OZODmmArYk.`
 )
@@ -69,15 +71,19 @@ func TestEndToEnd(t *testing.T) {
 		Issuer:      issuer,
 		ClientID:    clientID,
 		RedirectURL: redirectURL,
-		Scopes:      []string{oidc.ScopeOpenID, "profile", "email", oidc.ScopeOfflineAccess},
+		Scopes: []string{
+			oidc.ScopeOpenID, "profile", "email", oidc.ScopeOfflineAccess,
+			"audience:server:client_id:" + apiAudience, // mint the token for the API
+		},
 	}
 	_, oauthCfg, err := cfg.Provider(ctx)
 	if err != nil {
 		t.Fatalf("build provider: %v", err)
 	}
 
-	// Run the JSON-RPC server in-process on a random port.
-	srv, err := server.New(ctx, issuer, clientID)
+	// Run the JSON-RPC server in-process on a random port. It requires the API
+	// audience, so it only accepts tokens explicitly minted for it.
+	srv, err := server.New(ctx, issuer, apiAudience)
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
@@ -107,6 +113,9 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("robot login: %v", err)
 		}
 		latestToken = tok
+
+		// The access token must be minted for the resource server, not the CLI.
+		assertAudienceContains(t, tok.AccessToken, apiAudience)
 
 		resp := callRPC(t, serverAddr, "time", tok.AccessToken)
 		assertUser(t, resp, testUser)
@@ -214,13 +223,19 @@ staticClients:
     redirectURIs:
       - 'http://127.0.0.1:%d/callback'
       - '/device/callback'
+  - id: %s
+    name: 'OIDC Experiment API'
+    secret: test-api-secret
+    redirectURIs: []
+    trustedPeers:
+      - %s
 enablePasswordDB: true
 staticPasswords:
   - email: "%s"
     hash: '%s'
     username: "alice"
     userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
-`, dexPort, dexPort, clientID, redirectPort, testUser, testHash)
+`, dexPort, dexPort, clientID, redirectPort, apiAudience, clientID, testUser, testHash)
 
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write dex config: %v", err)
@@ -395,6 +410,48 @@ func assertUser(t *testing.T, resp rpc.Response, want string) {
 	if result["time"] == "" || result["time"] == nil {
 		t.Fatalf("missing time in result: %#v", result)
 	}
+}
+
+// jwtAudience unmarshals a JWT "aud" claim, which may be a single string or an
+// array of strings.
+type jwtAudience []string
+
+func (a *jwtAudience) UnmarshalJSON(b []byte) error {
+	var single string
+	if err := json.Unmarshal(b, &single); err == nil {
+		*a = []string{single}
+		return nil
+	}
+	var multi []string
+	if err := json.Unmarshal(b, &multi); err != nil {
+		return err
+	}
+	*a = multi
+	return nil
+}
+
+func assertAudienceContains(t *testing.T, accessToken, want string) {
+	t.Helper()
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("access token is not a JWT (%d segments)", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode token payload: %v", err)
+	}
+	var claims struct {
+		Aud jwtAudience `json:"aud"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("unmarshal claims: %v", err)
+	}
+	for _, a := range claims.Aud {
+		if a == want {
+			return
+		}
+	}
+	t.Fatalf("access token aud = %v, want it to contain %q", claims.Aud, want)
 }
 
 func assertUnauthorized(t *testing.T, resp rpc.Response) {

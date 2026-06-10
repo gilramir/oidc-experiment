@@ -31,16 +31,20 @@ type Server struct {
 }
 
 // New performs OIDC discovery against the issuer and builds a verifier that
-// checks signature, issuer, audience == clientID, and expiry. The provider's
-// signing keys are fetched lazily and cached by go-oidc, so the provider is not
-// contacted on every request.
-func New(ctx context.Context, issuer, clientID string) (*Server, error) {
+// checks signature, issuer, audience, and expiry. The provider's signing keys
+// are fetched lazily and cached by go-oidc, so the provider is not contacted on
+// every request.
+//
+// audience is the value that must appear in the token's "aud" claim — this
+// resource server's own identifier, not the CLI's. go-oidc spells the expected
+// audience as oidc.Config.ClientID, but here it means "the audience I require".
+func New(ctx context.Context, issuer, audience string) (*Server, error) {
 	provider, err := oidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, fmt.Errorf("discover OIDC issuer %q: %w", issuer, err)
 	}
 	return &Server{
-		verifier:    provider.Verifier(&oidc.Config{ClientID: clientID}),
+		verifier:    provider.Verifier(&oidc.Config{ClientID: audience}),
 		ReadTimeout: defaultReadTimeout,
 	}, nil
 }

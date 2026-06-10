@@ -54,6 +54,46 @@ The server reads the user's identity (`email`, falling back to `sub`) from the
 verified token's claims and trusts it, because the signature proves the token
 came from the provider and was not tampered with.
 
+## Token audience: who the token is *for*
+
+A JWT's `aud` (audience) claim names the party the token is meant for, and a
+resource server must reject tokens that aren't addressed to it. Otherwise a token
+minted for *some other* service could be replayed against ours.
+
+By default Dex sets a token's `aud` to the **client that requested it** — here,
+the CLI (`oidc-experiment-cli`). If the server simply required `aud =
+oidc-experiment-cli`, it would accept *any* token Dex ever issued to the CLI for
+any purpose. That's too loose: the server should only accept tokens explicitly
+minted **for the server**.
+
+So we give the resource server its own identity, `oidc-experiment-api`, and have
+the client request that as the audience. The pieces:
+
+- **A second registered client** in `dex/config.yaml`, `oidc-experiment-api`,
+  representing the API. It never runs a login flow; it exists only to be named as
+  an audience. It lists the CLI as a **trusted peer**.
+- **The CLI requests it** by adding the scope
+  `audience:server:client_id:oidc-experiment-api`. This is Dex's "cross-client"
+  mechanism (`internal/auth` builds the scope from the `--audience` flag).
+- **Dex honors it only because of the trust**: `oidc-experiment-api` lists
+  `oidc-experiment-cli` in `trustedPeers`, so Dex is willing to mint a token
+  addressed to the API on the CLI's behalf. Without that trust the request is
+  refused.
+
+The resulting access token carries `aud = ["oidc-experiment-api",
+"oidc-experiment-cli"]` (Dex always keeps the requesting client in the list, with
+`azp` — authorized party — identifying who actually asked). The server is
+configured with `--audience oidc-experiment-api` and requires that value to be
+present. A plain token whose audience is only `oidc-experiment-cli` is now
+**rejected**, which is the property we wanted.
+
+> **Honest caveat.** Dex stamps this same audience on the **ID token** too, so
+> `aud` alone does not let the server distinguish an access token from an ID
+> token — both would pass. Fully separating them would require checking a
+> token-type marker or introspecting. Requiring a dedicated API audience is
+> still the right and standard hardening step: it ensures the token was minted
+> *for this API*, not merely for the client.
+
 ## The two login flows
 
 The client supports two interactive flows, selected with `--auth`. Both produce
@@ -186,7 +226,8 @@ For each request the server, via `verifier.Verify`:
 
 1. Parses the JWT and checks its **signature** against the cached JWKS.
 2. Checks the **issuer** matches the configured issuer.
-3. Checks the **audience** contains the configured client id.
+3. Checks the **audience** contains the required API audience (`--audience`,
+   default `oidc-experiment-api`) — see "Token audience" above.
 4. Checks **expiry** (`exp`).
 
 Only then does it run the method. A missing token, a bad signature, a wrong
@@ -234,5 +275,8 @@ Nothing structural changes:
 - Register the same loopback redirect URI for the auth-code app, and enable the
   device grant for the device flow.
 - Keep `offline_access` in the requested scopes.
-- Optionally request a custom `audience` so the access token's `aud` is your API
-  rather than the client id, and set the server's expected audience to match.
+- Keep requesting a dedicated API `audience`. Okta models this with a custom
+  Authorization Server whose **audience** is your API; the client requests it via
+  the standard `audience` parameter (rather than Dex's `audience:server:client_id:`
+  scope), and the server still just requires that value in `aud`. The
+  `--audience` flag and the server's expected-audience check are unchanged.
