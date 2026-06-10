@@ -168,8 +168,8 @@ Access / ID tokens, typical production values:
 | AWS Cognito | 1 hour default (5 min–24 h) |
 
 High-security APIs go as low as 5–15 min: a leaked access token is only useful
-until it expires (see [INTROSPECTION.md](INTROSPECTION.md) on the revocation
-trade-off).
+until it expires (see "Token introspection and revocation" below for the
+revocation trade-off).
 
 Refresh tokens have **two clocks**, and whichever fires first ends the
 silent-refresh streak:
@@ -359,8 +359,8 @@ Implicit requirements worth noting:
   which discovery advertises in `id_token_signing_alg_values_supported`.
 
 > **The introspection exception.** If the server instead used **opaque** access
-> tokens, or chose introspection for immediate revocation (see
-> [INTROSPECTION.md](INTROSPECTION.md)), it *would* need its own **client
+> tokens, or chose introspection for immediate revocation (see "Token
+> introspection and revocation" below), it *would* need its own **client
 > credentials** to authenticate to the provider's `/introspect` endpoint. Local
 > validation needs only public information (issuer + audience); introspection
 > needs the server to be a credentialed client.
@@ -416,6 +416,204 @@ Rejection:
 
 The only method today is `time`, which returns the current time in RFC 3339
 format together with the authenticated user.
+
+## CLI login: terminal vs. browser
+
+A common question for a CLI like this one: **can the user just type their username
+and password at the command line, or must they use a browser?**
+
+Short answer: there *is* a no-browser path where the user types credentials right
+at the terminal — but it's a different OAuth grant, and it only works for plain
+password accounts. Once real-world authentication is involved (MFA, SSO,
+federated/social login, passkeys), a browser becomes effectively mandatory,
+because the identity provider — not the CLI — owns the login ceremony.
+
+The experiment ships two browser-delegating flows (`--auth=authcode` and
+`--auth=device`, covered above). This section records the terminal-only
+alternatives and why they are not the default.
+
+### Option A — Resource Owner Password Credentials (ROPC), the "password" grant
+
+The direct answer. The CLI prompts for username + password and POSTs them
+straight to the token endpoint — no browser, no redirect, no loopback server:
+
+```
+POST /token
+grant_type=password
+&client_id=oidc-experiment-cli
+&scope=openid profile email offline_access
+&username=alice@example.com
+&password=...
+```
+
+You get back the same tokens (including a refresh token if `offline_access` is
+requested).
+
+**Dex supports it** with one config line — point it at the connector that handles
+passwords:
+
+```yaml
+oauth2:
+  responseTypes: ["code"]
+  passwordConnector: local   # "local" is the enablePasswordDB connector
+```
+
+The client then performs the token request above. In this repo it would slot in
+cleanly as a third mode, `--auth=password`.
+
+**Okta supports it too**, but you must enable "Resource Owner Password" in the
+app's allowed grant types.
+
+**Why it's discouraged:**
+
+- **Deprecated.** Removed entirely in OAuth 2.1; both Okta and the IETF actively
+  advise against it.
+- **The CLI handles the raw password** — exactly what OAuth was designed to
+  avoid. Only acceptable for a fully trusted first-party client.
+- **Breaks with MFA and federation.** If the user logs in via Google/SAML/social,
+  or has any second factor, plain ROPC fails — there's no way to render that
+  challenge inside a `grant_type=password` call. An MFA-enrolled Okta user gets
+  an error instead of a token.
+
+### Option B — Okta Authentication API (interactive CLI, no browser, incl. MFA)
+
+Okta has a proprietary path that real CLIs use for terminal-only login *including*
+MFA:
+
+1. CLI prompts for username/password and calls Okta's **Authentication API**
+   (`POST /api/v1/authn`).
+2. If MFA is required, the API returns a challenge; the CLI **prompts for the OTP
+   at the terminal** and answers it.
+3. On success Okta returns a one-time **`sessionToken`**.
+4. The CLI runs a normal **Authorization Code flow but passes `sessionToken=...`
+   to `/authorize`** — Okta skips the login page and returns the code, which the
+   CLI exchanges for tokens.
+
+This is how tools like `okta-aws-cli` allow full terminal login, OTP and all,
+with no browser. It is **Okta-specific** (Dex has no equivalent) and still cannot
+handle factors that require a browser (WebAuthn/passkeys, IdP redirects).
+
+### The fundamental constraint
+
+Browser flows exist because **the IdP, not the CLI, owns the authentication
+ceremony.** A browser can render whatever the IdP presents: a Google login, a
+SAML redirect, a push notification, a passkey prompt. A CLI that collects
+`username`/`password` can only handle username and password.
+
+- **Local password accounts** → terminal-typed login is feasible (Option A, or
+  Option B on Okta).
+- **Anything federated / SSO / MFA-with-passkey** → fall back to a browser. This
+  is why the **Device Authorization Grant** exists: it keeps the CLI itself
+  browser-free, but still delegates the actual login to a browser somewhere
+  (even on your phone).
+
+### Decision for this experiment
+
+We use the browser-delegating flows (`--auth=authcode`, `--auth=device`) because
+they reflect how a real CLI authenticates against Okta and survive MFA/SSO.
+
+Since our Dex setup uses a local `passwordDB`, **Option A (ROPC) would also work**
+and is a legitimate thing to demo — it cleanly contrasts "trusted first-party CLI
+takes the password" against "delegate to the browser." If added, it should be
+exposed as `--auth=password` and clearly labelled deprecated / first-party-only,
+so the experiment documents *why* it's normally avoided. It is intentionally not
+implemented today.
+
+## Token introspection and revocation
+
+A question this experiment raises: once the server has validated a token, can it
+know the token was **revoked** before it expired — for example because the user
+logged out, was deactivated, or the token was stolen?
+
+With our design the answer is *no*, and that's a deliberate trade-off. This
+section explains why, and what the alternative (introspection) buys you.
+
+### Local JWT validation vs. introspection
+
+Our server does **local validation**: it holds the provider's public keys (JWKS)
+and checks the JWT's signature, issuer, audience, and `exp` without ever calling
+the provider per request. That's fast, scalable, and works offline — but it means
+the token is valid until it expires, full stop. If the user logs out or is
+deactivated, nothing the IdP does can stop that token until `exp`. The only lever
+is keeping `exp` short (this experiment uses 10 minutes).
+
+This is forced by the token *shape*:
+
+- **JWT (self-contained) access tokens** — what Dex issues. All the claims live
+  inside the signed token, so the resource server can validate locally. There is
+  nothing to phone home about, so there is no revocation awareness.
+- **Opaque (reference) access tokens** — just a random string, a handle. There
+  are **no claims inside**, so the resource server cannot validate it locally; it
+  has literally nothing to verify. It has no choice but to ask the IdP.
+
+That "ask the IdP" call is **token introspection** (RFC 7662):
+
+```
+POST /introspect              (the resource server authenticates itself to the IdP)
+token=<the token>
+→  { "active": true, "sub": "...", "scope": "...", "exp": ..., "client_id": "...", "aud": ... }
+```
+
+The crucial part: the IdP checks **its own store**. If the token was revoked or
+the session was logged out, it returns `{"active": false}` — so **revocation is
+immediate**. That is the property local JWT validation cannot have.
+
+### The trade-off
+
+| | Local JWT validation (this experiment) | Opaque + introspection |
+| --- | --- | --- |
+| Per-request IdP call | No | Yes (unless cached) |
+| Scales / works offline | Yes | Couples you to IdP availability |
+| Revocation | Only via `exp` | Immediate |
+| Token contents visible to resource server | Yes (decode the JWT) | Only what `/introspect` returns |
+
+"Opaque-token systems *must* introspect" because there is no other option — there
+are no claims to validate locally. As a side effect they get instant revocation
+for free, paying with a network round-trip per request (usually softened by
+caching the `active` result for a few seconds).
+
+### Three things worth knowing
+
+- **You can introspect JWTs too.** Dex and Okta both expose an introspection
+  endpoint (you can see `introspection_endpoint` in Dex's discovery document). It
+  is just usually pointless for JWTs — you would give up the speed that was the
+  whole reason to use them.
+- **The refresh token is the real revocation lever in our design.** Even with
+  un-revocable JWT access tokens, revoking the *refresh token* at the IdP means
+  the client can no longer mint a new access token — so access dies within one
+  access-token lifetime (≤10 min here). Short access-token TTL + a revocable
+  refresh token is the standard compromise, and it is exactly what this
+  experiment implements (see "Token management" above).
+- **Okta does both, depending on the authorization server.** Okta's *org*
+  authorization server issues **opaque** access tokens (you must introspect or
+  call `/userinfo` to learn anything about them); a *custom* authorization server
+  issues **JWTs** you can validate locally, like we do with Dex.
+
+### Other revocation strategies (for completeness)
+
+If you need tighter revocation than "wait for `exp`" but don't want an IdP call on
+every request, the common middle grounds are:
+
+- **Short-lived JWTs** (our approach): accept a small revocation window in
+  exchange for no per-request IdP calls. Most common for APIs.
+- **Introspection with caching**: introspect, but cache the `active` result for a
+  few seconds/minutes to amortize the cost — trading revocation latency for
+  performance.
+- **Revocation / "kill" lists**: push revoked token IDs (`jti`) to resource
+  servers (often via a fast shared cache) so they can reject specific JWTs
+  locally. Adds infrastructure.
+- **Backchannel logout**: OIDC has a logout spec where the IdP notifies relying
+  parties when a session ends.
+
+### Why this experiment chose local validation
+
+The experiment's goal is to demonstrate OIDC authentication end to end with a
+fast, self-contained resource server. Local JWT validation against the provider's
+JWKS gives exactly that, and pairing it with **short access-token lifetimes plus a
+revocable refresh token** keeps the revocation window small without adding a
+per-request dependency on the provider. Introspection would be the natural change
+if the requirement shifted to *immediate* revocation, or if the provider were
+configured to issue opaque tokens.
 
 ## Path to production (Okta)
 

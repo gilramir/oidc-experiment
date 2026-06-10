@@ -5,11 +5,10 @@ client logs in via an OIDC provider (Dex locally; Okta in the real world),
 obtains an access token, and sends it with each request. The server verifies the
 token and serves only authenticated users.
 
-Further reading:
-
-- **[DESIGN.md](DESIGN.md)** — the full design, especially token storage and refresh.
-- **[INTROSPECTION.md](INTROSPECTION.md)** — token introspection vs. local validation, and revocation.
-- **[CLI.md](CLI.md)** — terminal vs. browser login options.
+See **[DESIGN.md](DESIGN.md)** for the full design — token storage and refresh,
+real-world lifetimes, configuring the client and server,
+[terminal vs. browser login](DESIGN.md#cli-login-terminal-vs-browser), and
+[token introspection & revocation](DESIGN.md#token-introspection-and-revocation).
 
 ## Layout
 
