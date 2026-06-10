@@ -15,16 +15,16 @@ focuses on.
 ```
         ┌────────────┐     1. log in (browser / device code)
         │   Client   │ ───────────────────────────────────────►┌──────────┐
-        │   (CLI)    │ ◄─────────────────────────────────────── │   Dex    │
-        └─────┬──────┘     2. access + refresh + id tokens      │ (OIDC    │
-              │                                                  │ provider)│
-              │ 3. JSON-RPC request                              └────┬─────┘
-              │    { method, token: <access JWT> }                    │
-              ▼                                                        │
-        ┌────────────┐                                                 │
-        │   Server   │  4. verify JWT signature against JWKS ─────────►│
-        │ (resource) │     (fetched once, then cached)                 │
-        └────────────┘                                                 │
+        │   (CLI)    │ ◄───────────────────────────────────────│   Dex    │
+        └─────┬──────┘     2. access + refresh + id tokens     │ (OIDC    │
+              │                                                │ provider)│
+              │ 3. JSON-RPC request                            └────┬─────┘
+              │    { method, token: <access JWT> }                  │
+              ▼                                                     │
+        ┌────────────┐                                              │
+        │   Server   │  4. verify JWT signature against JWKS ──────►│
+        │ (resource) │     (fetched once, then cached)              │
+        └────────────┘                                              │
 ```
 
 - **Dex** is the OIDC provider. It stands in for a real-world provider such as
