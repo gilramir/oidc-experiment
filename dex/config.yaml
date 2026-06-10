@@ -1,0 +1,55 @@
+# Dex configuration for the OIDC experiment.
+#
+# Run with:   dex serve dex/config.yaml
+# (see README.md for installing/running Dex via `go install` or Docker)
+#
+# Dex stands in for a real provider like Okta. The client and server only know
+# the issuer URL and client id, so pointing them at Okta later is a config swap.
+
+issuer: http://127.0.0.1:5556/dex
+
+# In-memory storage: nothing persists across restarts, which is fine for an
+# experiment (you just log in again).
+storage:
+  type: memory
+
+web:
+  http: 127.0.0.1:5556
+
+# Token lifetimes. idTokens is deliberately short so the client's silent
+# refresh path actually gets exercised. Access tokens share this expiry.
+expiry:
+  idTokens: "10m"
+  refreshTokens:
+    reuseInterval: "30s"
+    validIfNotUsedFor: "2160h" # 90 days idle limit
+    absoluteLifetime: "3960h"  # ~165 day hard cap
+
+oauth2:
+  responseTypes: ["code"]
+  # Skip the "do you approve this app?" screen; the user still has to log in.
+  skipApprovalScreen: true
+
+# A single public (no-secret) client used by the CLI. Public + PKCE is the
+# correct shape for a distributed binary. The same client is used for both the
+# authorization-code and device flows.
+staticClients:
+  - id: oidc-experiment-cli
+    name: 'OIDC Experiment CLI'
+    public: true
+    redirectURIs:
+      # Loopback redirect for the Authorization Code + PKCE flow.
+      - 'http://127.0.0.1:5555/callback'
+      # Dex's internal callback for the Device Authorization Grant. It is only
+      # auto-allowed for public clients that register NO redirect URIs; since we
+      # register the loopback one above, we must list this explicitly too.
+      - '/device/callback'
+
+# A built-in username/password user so there's a "human" to log in as.
+# Login as alice@example.com / password
+enablePasswordDB: true
+staticPasswords:
+  - email: "alice@example.com"
+    hash: '$2a$10$351Qx.P/23Bb5lXu2MwhB.7YhfDzf2OPIW3kZurT34OZODmmArYk.'
+    username: "alice"
+    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
