@@ -17,9 +17,17 @@ import (
 	"github.com/gilbertr/oidc-experiment/internal/rpc"
 )
 
+// defaultReadTimeout bounds how long a connection may take to deliver its
+// request, so a client that connects and never sends can't pin a goroutine
+// (and a socket) open indefinitely.
+const defaultReadTimeout = 5 * time.Second
+
 // Server verifies access tokens and serves JSON-RPC methods.
 type Server struct {
 	verifier *oidc.IDTokenVerifier
+	// ReadTimeout bounds the time allowed to read a request from a connection.
+	// Zero disables the deadline. Defaults to defaultReadTimeout.
+	ReadTimeout time.Duration
 }
 
 // New performs OIDC discovery against the issuer and builds a verifier that
@@ -31,7 +39,10 @@ func New(ctx context.Context, issuer, clientID string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("discover OIDC issuer %q: %w", issuer, err)
 	}
-	return &Server{verifier: provider.Verifier(&oidc.Config{ClientID: clientID})}, nil
+	return &Server{
+		verifier:    provider.Verifier(&oidc.Config{ClientID: clientID}),
+		ReadTimeout: defaultReadTimeout,
+	}, nil
 }
 
 // Serve accepts connections until the listener is closed.
@@ -49,6 +60,10 @@ func (s *Server) Serve(ln net.Listener) error {
 // out.
 func (s *Server) Handle(conn net.Conn) {
 	defer conn.Close()
+
+	if s.ReadTimeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
+	}
 
 	var req rpc.Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {

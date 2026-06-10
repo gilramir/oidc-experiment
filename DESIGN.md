@@ -195,6 +195,12 @@ issuer/audience, or an expired token all produce a JSON-RPC error with code
 (empty token → error). This is what makes the short token lifetime safe: an
 expired token is rejected, and the client transparently refreshes it.
 
+Each connection also carries a read deadline (`Server.ReadTimeout`, default 5s),
+so a client that connects but never sends a request cannot pin a goroutine and
+socket open. The validation paths (valid / expired / wrong-audience /
+wrong-issuer / bad-signature / missing) are covered by unit tests in
+`internal/server` using a mock issuer.
+
 ## Protocol
 
 One JSON object per direction, per TCP connection (`internal/rpc`).

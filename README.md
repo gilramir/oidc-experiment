@@ -97,16 +97,22 @@ go run ./cmd/server  --port 9000 --issuer http://127.0.0.1:5556/dex
 ## Tests
 
 ```sh
-go test ./...          # runs the end-to-end test in internal/e2e
-go test ./... -short   # skips it
+go test ./...          # server unit tests + the Dex end-to-end test
+go test ./... -short   # unit tests only (skips anything that launches Dex)
 ```
 
-The end-to-end test (`internal/e2e`) launches a real Dex on random ports, runs
-the server in-process, and drives **both** login flows headlessly (a small
-"robot browser" submits Dex's login form), then checks token caching, silent
-refresh, and the anonymous/invalid-token rejection paths. It is skipped
-automatically if the `dex` binary isn't found on `PATH` or in `~/go/bin`, or
-under `-short`.
+Two layers:
+
+- **`internal/server`** unit tests validate the token-checking logic against a
+  mock OIDC issuer, so they can mint tokens a real provider never would —
+  expired, wrong-audience, wrong-issuer, bad-signature — and assert each is
+  rejected (plus the happy path and the read-deadline on idle connections).
+  Fast, no external dependencies, run under `-short`.
+- **`internal/e2e`** launches a real Dex on random ports, runs the server
+  in-process, and drives **both** login flows headlessly (a small "robot
+  browser" submits Dex's login form), then checks token caching, silent refresh,
+  and the anonymous/invalid-token rejection paths. Skipped automatically if the
+  `dex` binary isn't found on `PATH` or in `~/go/bin`, or under `-short`.
 
 ## Things to try
 
