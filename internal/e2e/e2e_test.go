@@ -31,10 +31,10 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/gilbertr/oidc-experiment/internal/auth"
-	"github.com/gilbertr/oidc-experiment/internal/rpc"
-	"github.com/gilbertr/oidc-experiment/internal/server"
-	"github.com/gilbertr/oidc-experiment/internal/token"
+	"github.com/gilramir/oidc-experiment/internal/auth"
+	"github.com/gilramir/oidc-experiment/internal/rpc"
+	"github.com/gilramir/oidc-experiment/internal/server"
+	"github.com/gilramir/oidc-experiment/internal/token"
 	"golang.org/x/oauth2"
 )
 

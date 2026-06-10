@@ -1,4 +1,4 @@
-module github.com/gilbertr/oidc-experiment
+module github.com/gilramir/oidc-experiment
 
 go 1.25.1
 

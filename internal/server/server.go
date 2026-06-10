@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/gilbertr/oidc-experiment/internal/rpc"
+	"github.com/gilramir/oidc-experiment/internal/rpc"
 )
 
 // defaultReadTimeout bounds how long a connection may take to deliver its

@@ -10,7 +10,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/gilbertr/oidc-experiment/internal/server"
+	"github.com/gilramir/oidc-experiment/internal/server"
 )
 
 func main() {
