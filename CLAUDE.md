@@ -15,6 +15,11 @@ swap, not a code change.
 lifetimes, terminal-vs-browser login, introspection/revocation). Keep it in sync when
 changing behavior it describes.
 
+**[PROVIDERS.md](PROVIDERS.md)** surveys production OIDC providers with LDAP backends
+(Keycloak, Authentik, Authelia, Zitadel, Ory Hydra, …), compares them to Dex, and
+sketches the provider-specific audience-mapping mechanism for getting
+`aud=oidc-experiment-api` onto the access token.
+
 ## Commands
 
 ```sh

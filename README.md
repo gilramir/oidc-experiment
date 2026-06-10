@@ -9,6 +9,9 @@ See **[DESIGN.md](DESIGN.md)** for the full design — token storage and refresh
 real-world lifetimes, configuring the client and server,
 [terminal vs. browser login](DESIGN.md#cli-login-terminal-vs-browser), and
 [token introspection & revocation](DESIGN.md#token-introspection-and-revocation).
+See **[PROVIDERS.md](PROVIDERS.md)** for production-grade OIDC providers with LDAP
+backends (Keycloak, Authentik, Authelia, …), how they compare to Dex, and how to
+stamp the resource server's audience onto tokens in each.
 
 ## Layout
 
