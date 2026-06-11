@@ -778,6 +778,54 @@ under Security considerations) — but a role account is the textbook case where
 *would* add one: e.g. require a specific scope, or allow only certain `sub`/`azp`
 values. That is the natural next layer on top of this flow.
 
+## Acting on behalf of another principal (admin-granted credentials)
+
+A recurring question, adjacent to role accounts: can an admin **grant a token to another
+principal** — especially a service/role account — and **install it into a file**? Yes,
+but OAuth2 splits this into several mechanisms, and most of them deliberately avoid
+putting a bare access token on disk. Access tokens are short-lived by design (10 minutes
+here — see "Token management"), so the real question is *what long-lived artifact you
+install, and what mints the short-lived tokens from it.*
+
+| You want… | Mechanism | Artifact on disk |
+| --- | --- | --- |
+| Machine/role account, no human, no browser | **Client Credentials** (RFC 6749 §4.4) or `private_key_jwt` (RFC 7523) | client **secret** / private key |
+| Admin acquires a token to **act as** a user | **Token Exchange** (RFC 8693) | none — minted at runtime by a trusted service |
+| Durable on-disk credential that self-refreshes | **Refresh token** via `offline_access` | refresh token (inside `token.json`) |
+| Ephemeral, single use (CI step) | bare access token | access token (expires fast) |
+
+The reframings that matter:
+
+- **Service account → install a *secret*, not a token.** The admin provisions a client in
+  the IdP and hands over a `client_id` + `client_secret` (or registers a public key for
+  `private_key_jwt`). The service mints its own short-lived access tokens on demand via
+  the client-credentials grant; the file on disk holds the *secret*, and tokens stay
+  ephemeral. This is exactly the flow in "Service / role accounts" above.
+
+- **"Install a *token* into a file" is only correct for a *refresh* token.** If you truly
+  want a durable on-disk credential that survives restarts and silently produces access
+  tokens, that is a refresh token obtained with `offline_access` after one interactive
+  consent — precisely what `internal/token` already persists (`0600`, silent refresh; see
+  "Where tokens are stored"). A bare *access* token in a file is an anti-pattern: it
+  expires in minutes and has no rotation story. Only an ephemeral CI step should do it.
+
+- **Admin acting *as* another user → Token Exchange, done at runtime, not written to a
+  file.** A privileged client presents its own token (and optionally the target's) to the
+  token endpoint and receives a token scoped to the other principal. Two variants:
+  - **Impersonation** — the issued token's `sub` *is* the target user. Our
+    `internal/server` cannot tell it apart from that user logging in directly, so there is
+    no record of who actually acted.
+  - **Delegation** — the issued token keeps the target user as `sub` but adds an **`act`**
+    (actor) claim naming the real caller, so a resource server can see "service S acting
+    for user U." `internal/server` would accept such a token today (the extra claim
+    doesn't affect signature/issuer/aud/expiry), but it would *record* the actor only if
+    it additionally read the `act` claim — which it does not currently do.
+
+The wire-level Token Exchange request/response, and which providers can actually perform
+it (Dex can run neither `client_credentials` nor an end-to-end exchange against the
+bundled setup), are in **PROVIDERS.md** under "Token Exchange and machine-to-machine
+grants."
+
 ## Token introspection and revocation
 
 A question this experiment raises: once the server has validated a token, can it

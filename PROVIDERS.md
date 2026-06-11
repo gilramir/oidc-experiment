@@ -127,6 +127,93 @@ is unchanged: it still just checks `aud == oidc-experiment-api`.
 > Note: Authelia's OIDC provider support is newer than its forward-auth core; confirm
 > the exact `audience` / RFC 8707 semantics against the version you deploy.
 
+## Token Exchange and machine-to-machine grants
+
+DESIGN.md ("Acting on behalf of another principal" and "Service / role accounts") covers
+*what credential an admin installs* for service and delegated access — the conceptual
+split between a secret, a refresh token, and a bare access token. Which of those grants a
+given provider can actually perform is the provider-specific part, recorded here.
+
+Two grants matter beyond the interactive human flows:
+
+- **Client Credentials** (RFC 6749 §4.4) — the machine/role-account grant; the client
+  authenticates as itself, no user. (Used by `internal/auth/clientcreds.go`.)
+- **Token Exchange** (RFC 8693) — the "act on behalf of another principal" grant; a
+  trusted service trades one token for another scoped to a different subject/audience. It
+  is also the foundation of secretless workload-identity federation.
+
+| Provider | `client_credentials` | Token Exchange (RFC 8693) |
+|----------|----------------------|---------------------------|
+| **Dex** | No (grant set is hard-coded) | Grant implemented, but a working demo needs an upstream connector to validate the subject token — the bundled static-password setup has none |
+| **Keycloak** | Yes | Yes (standard + legacy variants; per-client *token-exchange* permission) |
+| **Okta** | Yes (service apps, custom auth server) | Yes (via a custom authorization-server policy) |
+| **Zitadel** | Yes | Yes |
+| **Authentik** | Yes | Partial / evolving |
+| **Auth0** | Yes (M2M apps) | Yes (custom token exchange) |
+| **Ory Hydra** | Yes | Yes |
+
+So against the bundled Dex neither grant runs end to end: `client_credentials` returns
+`unsupported_grant_type`, and token exchange has no upstream subject token to exchange
+*from*. Both are correct against a provider in the table above; switching is the usual
+config swap (issuer + client id + secret).
+
+### Token Exchange (RFC 8693) flow sketch
+
+The scenario: a privileged service (an admin tool, an API gateway, a job runner) holds
+its own token and wants a token that lets it act **as** — or **on behalf of** — another
+principal. RFC 8693 defines this as a grant on the token endpoint.
+
+```
+POST /token
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&subject_token=<token identifying the principal to act as>          (required)
+&subject_token_type=urn:ietf:params:oauth:token-type:access_token   (or id_token, jwt, …)
+&actor_token=<the admin/service's own token>                        (optional; required for delegation)
+&actor_token_type=urn:ietf:params:oauth:token-type:access_token
+&audience=oidc-experiment-api          (who the new token is for — our resource server)
+&scope=openid                          (requested scopes, may be narrowed)
+&requested_token_type=urn:ietf:params:oauth:token-type:access_token
+```
+
+Two semantically different results, distinguished by whether `actor_token` is sent (the
+impersonation-vs-delegation distinction — see DESIGN.md):
+
+- **Impersonation** — no `actor_token`. The returned token's `sub` *is* the target user.
+- **Delegation** — `actor_token` present. The token keeps the target user as `sub` but
+  adds an **`act`** (actor) claim naming the real caller:
+
+  ```json
+  { "aud": "oidc-experiment-api", "sub": "alice@example.com",
+    "act": { "sub": "admin-tool@example.com" } }
+  ```
+
+The endpoint responds with a normal token payload (note `issued_token_type`):
+
+```json
+{
+  "access_token": "eyJ…",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "token_type": "Bearer",
+  "expires_in": 600
+}
+```
+
+How this would land in *this* codebase (against a provider that supports it):
+
+- A new flow next to the others — `internal/auth/exchange.go` returning the same
+  `*oauth2.Token` the other flows do — so everything downstream (the token store, the
+  server's verifier) is unchanged. The grant isn't in `golang.org/x/oauth2`, so it'd be a
+  manual POST to the token endpoint (like `clientcreds.go` builds its own config), setting
+  the form fields above.
+- The privileged client must be authorized in the IdP to perform exchange (Keycloak:
+  *token-exchange* permission on the target client; Okta: a custom auth-server policy).
+- The resulting token carries `aud = oidc-experiment-api` via the same audience-mapping
+  mechanism described above — token exchange sets it through the `audience` request
+  parameter rather than a scope.
+- For an **`act`**-aware server, `internal/server` would additionally read the `act` claim
+  to log/authorize the actor; today it checks only signature/issuer/aud/expiry, so a
+  delegation token still verifies but the actor goes unrecorded.
+
 ## Bottom line
 
 Switching providers in this experiment is a **config swap, not a code change**, with one
