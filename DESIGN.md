@@ -821,6 +821,49 @@ The reframings that matter:
     doesn't affect signature/issuer/aud/expiry), but it would *record* the actor only if
     it additionally read the `act` claim — which it does not currently do.
 
+### How Token Exchange works (RFC 8693)
+
+User A calls the token endpoint with both tokens:
+
+```
+POST /token
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&subject_token=<user B's access token>          # the resource being acted upon
+&subject_token_type=urn:ietf:params:oauth:token-type:access_token
+&actor_token=<user A's access token>            # who is doing the acting
+&actor_token_type=urn:ietf:params:oauth:token-type:access_token
+&audience=oidc-experiment-api
+```
+
+The IdP verifies both tokens, checks its policy, and returns a new token. Whether the
+result carries `sub=B` alone (**impersonation** — A is invisible) or `sub=B` plus
+`act={"sub":"A"}` (**delegation** — both identities visible) is a provider configuration
+choice. Impersonation requires no changes to `internal/server`; delegation would
+require it to additionally read the `act` claim for auditing or authorization.
+
+**Pre-authorizing delegation with `may_act`.** User B's token can carry a `may_act`
+claim — a JSON object identifying who is pre-authorized to act on their behalf:
+
+```json
+{ "may_act": { "sub": "user-A-id" } }
+```
+
+When user A presents the exchange, the IdP checks `may_act` to decide whether to grant
+it. Without this claim (or an equivalent admin policy at the IdP), user A cannot
+unilaterally claim permission to act for user B — the request is rejected. Consent
+can also come from an interactive flow where user B explicitly approves the delegation.
+
+**Provider support.** RFC 8693 is relatively recent (2020) and implementation quality
+varies significantly:
+
+| Provider | Token Exchange support |
+| --- | --- |
+| Keycloak | Strong: impersonation and delegation with `act`, configurable per-client policy |
+| Zitadel | Partial (impersonation; `act` support varies by version) |
+| Okta | Impersonation via token exchange; `act` claim requires additional configuration |
+| Auth0 | Not supported natively |
+| Dex | Advertises `token-exchange` in discovery but does not implement it; any exchange request returns `unsupported_grant_type` |
+
 The wire-level Token Exchange request/response, and which providers can actually perform
 it (Dex can run neither `client_credentials` nor an end-to-end exchange against the
 bundled setup), are in **PROVIDERS.md** under "Token Exchange and machine-to-machine
