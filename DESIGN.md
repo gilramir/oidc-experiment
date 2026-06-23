@@ -163,9 +163,23 @@ For headless boxes / SSH sessions with no local browser. See
 
 1. The client asks the provider for a device code + user code.
 2. It prints a URL and a short user code: "go to `<url>` and enter `ABCD-1234`".
-   The user does this on *any* device.
-3. The client polls the token endpoint until the user finishes, then receives
-   the same set of tokens.
+3. The user opens the URL in a **browser on any other device** — a laptop, a phone,
+   anything. They type the user code, then **log in normally at the provider's page**:
+   username + password, MFA, SSO, whatever that provider requires. This is the same
+   login form as the auth-code flow; only the entry point differs.
+4. The provider links the approved user code → device code it issued in step 1.
+5. The client's next poll succeeds and it receives tokens scoped to that user.
+
+The `device_code` is only a **temporary nonce** — it carries no cryptographic proof of
+device identity. The security model rests entirely on the user-code UX: it is
+short-lived, and the user must proactively visit the specific URL and type it in. The
+assumption is that only the person who initiated the flow would do so.
+
+One implication: **device code phishing** is a real attack. An attacker can start the
+flow on their own machine, send a victim a phishing link to `<url>?user_code=…`, and if
+the victim logs in they are handing the attacker a valid token. This cannot be fully
+prevented at the client level — it is the provider's and user's problem — but short
+code expiry limits the window.
 
 No loopback server and no PKCE are involved.
 
@@ -752,6 +766,99 @@ OIDC and SPIFFE are the common implementations. Dex supports the token-exchange
 grant, but a working demo needs an **upstream connector** to validate the incoming
 subject token, which the bundled static-password setup doesn't have — so it is
 documented here rather than wired up.
+
+#### Workload identity in practice
+
+The pattern is always: **platform attestation → short-lived OIDC token → Token
+Exchange → access token**. The receiving service does not change — it still validates
+the same way against the same IdP. Only the *calling* service's token-acquisition
+step differs.
+
+**Kubernetes projected service account tokens.** Each pod can be given a
+volume-projected service account JWT bound to a specific audience (not the default
+`kubernetes.svc` token — that one is long-lived and too broad). Configure the IdP
+to trust the k8s API server as an upstream OIDC issuer; then the pod exchanges its
+SA token at the IdP's token endpoint via RFC 8693 and gets back an access token it
+can present to other services. AWS EKS IRSA and GCP Workload Identity Federation
+both work this way: the cloud IAM system is the IdP, the k8s OIDC issuer is the
+trusted upstream, and the pod's SA token is the subject token being exchanged.
+
+**SPIFFE/SPIRE.** For environments that span k8s, VMs, and bare-metal, SPIRE
+attests each workload (by node/process/pod/container identity) and issues
+short-lived **JWT-SVIDs** with a `spiffe://` URI as the subject. These can be
+used as subject tokens in a Token Exchange request to any IdP that trusts the
+SPIRE issuer. SPIRE is the standard approach for multi-platform service meshes
+where you can't assume k8s everywhere.
+
+**GitHub Actions / CI.** Each job gets a short-lived OIDC token from GitHub's own
+issuer, scoped to the repository and workflow. Configure the IdP to trust
+`token.actions.githubusercontent.com` as an upstream, and the workflow can exchange
+its job token for an access token — no secrets stored in the repo at all.
+
+The net result in all these cases: a service calling another service presents an
+access token just like a human would. The resource server (`internal/server`) is
+identical. Only how that token was *minted* differs.
+
+#### Secret storage options (for the static-secret approach)
+
+When workload identity isn't available (on-prem, legacy infra, simple setups), the
+client secret or private key has to live somewhere. Options roughly in order of
+increasing security:
+
+| Storage | Key property | Weakness |
+| --- | --- | --- |
+| **k8s Secret** | Simple; available to pods as env vars or volume mounts | Base64-only encoding, not encryption; visible to anyone with `get secret` permission in the namespace |
+| **Env var from CI/CD** (GitHub Actions secret, GitLab CI variable) | Easy for CI pipelines; scoped to repo/environment | Lives in CI system's secret store; hard to rotate across many jobs |
+| **HashiCorp Vault** | Open-source; k8s/AWS/GCP/OIDC auth methods; **dynamic secrets** (Vault generates a short-lived client secret on demand — the stored thing is an API policy, not a password); runs on-prem or as HCP Vault | Operational overhead to run |
+| **AWS Secrets Manager** | Managed; native IAM access control; built-in rotation hooks | AWS-only; cost per secret |
+| **GCP Secret Manager** | Managed; IAM via Workload Identity; versioned | GCP-only |
+| **Azure Key Vault** | Managed; HSM-backed for keys; Managed Identity access | Azure-only |
+| **Infisical / Doppler** | Developer-friendly SaaS vaults; k8s operator injection | Third-party dependency; SaaS trust model |
+
+The standout is **Vault's dynamic secrets**: rather than storing a static client
+secret, Vault's IdP secrets engine generates a fresh, short-lived credential each
+time a service asks for one. The service holds nothing between calls; the long-lived
+thing is the Vault policy, and the secret itself expires in minutes. This is the
+closest you get to workload identity's "no stored secret" property while still using
+Client Credentials.
+
+#### How Vault trusts the service requesting secrets
+
+Vault has pluggable **auth methods** — each answers "how does this caller prove who
+it is?" Vault doesn't trust the service directly; it trusts an **external authority**
+that vouches for the service's identity, then maps that identity to a policy. The
+mechanism is the same check as `internal/server`'s `verifier.Verify` — just done by
+Vault instead of your API.
+
+**Kubernetes auth** (most common for k8s workloads). The pod presents its projected
+service account JWT to Vault. Vault calls the Kubernetes **TokenReview API** to
+validate it — the k8s API server is the authority, so there is no bootstrapping
+secret. Vault checks the pod's service account and namespace against a configured
+role and, on a match, issues a short-lived Vault token with the policies for that
+role.
+
+**JWT/OIDC auth** (for SPIFFE, GitHub Actions, etc.). If the workload already has
+an OIDC token — a SPIFFE JWT-SVID, a GitHub Actions job token, a GCP service account
+JWT — it presents that directly to Vault. Vault fetches the issuer's JWKS and
+validates signature, issuer, audience, and expiry. It then maps claims (`sub`,
+`namespace`, etc.) to a Vault role. This is identical to what `internal/server` does;
+the only difference is the output is a Vault token instead of an authorized RPC call.
+
+**AWS/GCP auth**. The instance calls a cloud-native "who am I?" API
+(`sts:GetCallerIdentity` on AWS, the GCP metadata server for a signed identity
+token) and forwards the signed proof to Vault. Vault verifies with the cloud
+provider's API. The cloud platform's hardware root of trust is the authority —
+nothing to bootstrap.
+
+**AppRole** (fallback for simpler setups without a platform to vouch). Two pieces: a
+`role_id` (not secret — can be baked into the image) and a `secret_id` (short-lived,
+injected at deploy time by a Vault agent sidecar or CI step). Neither half is useful
+alone. There is still a "secret zero" bootstrapping problem for the `secret_id`, but
+the sidecar or CI system solves it in practice.
+
+The k8s and JWT/OIDC methods are the clean ones: there is genuinely no secret to
+bootstrap because the authority is cryptographic and held by the platform, not the
+workload.
 
 ### On Okta specifically
 
