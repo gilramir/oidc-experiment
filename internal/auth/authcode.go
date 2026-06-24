@@ -30,11 +30,22 @@ func AuthCode(ctx context.Context, cfg *oauth2.Config, present func(authURL stri
 		return nil, fmt.Errorf("parse redirect url: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", u.Host)
+	// Bind on port 0 so the kernel assigns an ephemeral port.
+	ln, err := net.Listen("tcp", u.Hostname()+":0")
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s for redirect: %w", u.Host, err)
+		return nil, fmt.Errorf("listen on loopback for redirect: %w", err)
 	}
 	defer ln.Close()
+
+	// Rebuild the redirect URL with the actual port so the provider's redirect
+	// lands on the port we're listening on.
+	u.Host = fmt.Sprintf("%s:%d", u.Hostname(), ln.Addr().(*net.TCPAddr).Port)
+	redirectURL := u.String()
+
+	// Work from a copy of cfg with the updated redirect URL so we don't mutate
+	// the caller's config.
+	cfgCopy := *cfg
+	cfgCopy.RedirectURL = redirectURL
 
 	state := randomString()
 	verifier := oauth2.GenerateVerifier()
@@ -66,7 +77,7 @@ func AuthCode(ctx context.Context, cfg *oauth2.Config, present func(authURL stri
 	go srv.Serve(ln)
 	defer srv.Close()
 
-	authURL := cfg.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
+	authURL := cfgCopy.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
 	present(authURL)
 
 	select {
@@ -76,7 +87,7 @@ func AuthCode(ctx context.Context, cfg *oauth2.Config, present func(authURL stri
 		if res.err != nil {
 			return nil, res.err
 		}
-		return cfg.Exchange(ctx, res.code, oauth2.VerifierOption(verifier))
+		return cfgCopy.Exchange(ctx, res.code, oauth2.VerifierOption(verifier))
 	}
 }
 

@@ -165,7 +165,6 @@ def auth_code_flow(
     """
     parsed = urllib.parse.urlparse(config.redirect_url)
     host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 5555
     callback_path = parsed.path or "/callback"
 
     state = _random_state()
@@ -202,7 +201,18 @@ def auth_code_flow(
             self.end_headers()
             self.wfile.write(body)
 
-    server = HTTPServer((host, port), _Handler)
+    # Bind on port 0 so the kernel assigns an ephemeral port.
+    server = HTTPServer((host, 0), _Handler)
+    actual_port = server.server_address[1]
+    # Rebuild the redirect URL with the actual port so the provider's redirect
+    # lands on the port we're listening on.
+    redirect_url = urllib.parse.urlunparse((
+        parsed.scheme or "http",
+        f"{host}:{actual_port}",
+        callback_path,
+        "", "", "",
+    ))
+
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -210,7 +220,7 @@ def auth_code_flow(
         auth_url = endpoints.authorization_endpoint + "?" + urllib.parse.urlencode({
             "response_type": "code",
             "client_id": config.client_id,
-            "redirect_uri": config.redirect_url,
+            "redirect_uri": redirect_url,
             "scope": " ".join(config.scopes),
             "state": state,
             "code_challenge": challenge,
@@ -229,7 +239,7 @@ def auth_code_flow(
         data={
             "grant_type": "authorization_code",
             "code": result["code"],
-            "redirect_uri": config.redirect_url,
+            "redirect_uri": redirect_url,
             "client_id": config.client_id,
             "code_verifier": verifier,
         },

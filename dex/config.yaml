@@ -37,13 +37,12 @@ staticClients:
   - id: oidc-experiment-cli
     name: 'OIDC Experiment CLI'
     public: true
-    redirectURIs:
-      # Loopback redirect for the Authorization Code + PKCE flow.
-      - 'http://127.0.0.1:5555/callback'
-      # Dex's internal callback for the Device Authorization Grant. It is only
-      # auto-allowed for public clients that register NO redirect URIs; since we
-      # register the loopback one above, we must list this explicitly too.
-      - '/device/callback'
+    # No redirectURIs registered: Dex's public-client fallback then allows any
+    # loopback redirect URI (any port, any path on 127.0.0.1/localhost) for the
+    # auth-code flow, and auto-whitelists /device/callback for the device flow.
+    # Registering even one URI switches Dex to strict exact-match mode, which
+    # would break the kernel-assigned ephemeral port used by the client.
+    redirectURIs: []
 
   # The resource server's identity. It never logs anyone in; it exists so the
   # access token can carry aud=oidc-experiment-api. The CLI requests that with

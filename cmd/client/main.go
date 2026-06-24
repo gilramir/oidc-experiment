@@ -37,7 +37,7 @@ const (
 	defaultIssuer   = "http://127.0.0.1:5556/dex"
 	defaultClientID = "oidc-experiment-cli"
 	defaultAudience = "oidc-experiment-api"
-	redirectURL     = "http://127.0.0.1:5555/callback"
+	redirectURL     = "http://127.0.0.1/callback"
 
 	// crossClientScopePrefix is Dex's way to request that the issued token's
 	// audience be a *different* registered client (our resource server) rather

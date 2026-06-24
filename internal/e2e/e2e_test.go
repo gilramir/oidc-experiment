@@ -60,11 +60,12 @@ func TestEndToEnd(t *testing.T) {
 	defer cancel()
 
 	dexPort := freePort(t)
-	redirectPort := freePort(t)
 	issuer := fmt.Sprintf("http://127.0.0.1:%d/dex", dexPort)
-	redirectURL := fmt.Sprintf("http://127.0.0.1:%d/callback", redirectPort)
+	// Any loopback URI works here; AuthCode picks the actual port at runtime
+	// and Dex accepts any loopback port per RFC 8252 §7.3.
+	redirectURL := "http://127.0.0.1/callback"
 
-	startDex(ctx, t, dexBin, dexPort, redirectPort)
+	startDex(ctx, t, dexBin, dexPort)
 
 	// Build the OIDC client config (issuer + endpoints), as the CLI does.
 	cfg := auth.Config{
@@ -107,6 +108,12 @@ func TestEndToEnd(t *testing.T) {
 			go func() { robotErr <- robotLogin(authURL) }()
 		})
 		if err != nil {
+			// Drain the robot error for better diagnostics before fataling.
+			select {
+			case re := <-robotErr:
+				t.Logf("robot error: %v", re)
+			default:
+			}
 			t.Fatalf("AuthCode: %v", err)
 		}
 		if err := <-robotErr; err != nil {
@@ -202,7 +209,7 @@ func findDex() string {
 	return ""
 }
 
-func startDex(ctx context.Context, t *testing.T, dexBin string, dexPort, redirectPort int) {
+func startDex(ctx context.Context, t *testing.T, dexBin string, dexPort int) {
 	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "dex.yaml")
 	cfg := fmt.Sprintf(`issuer: http://127.0.0.1:%d/dex
@@ -223,9 +230,7 @@ staticClients:
   - id: %s
     name: 'OIDC Experiment CLI'
     public: true
-    redirectURIs:
-      - 'http://127.0.0.1:%d/callback'
-      - '/device/callback'
+    redirectURIs: []
   - id: %s
     name: 'OIDC Experiment API'
     secret: test-api-secret
@@ -238,7 +243,7 @@ staticPasswords:
     hash: '%s'
     username: "alice"
     userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
-`, dexPort, dexPort, clientID, redirectPort, apiAudience, clientID, testUser, testHash)
+`, dexPort, dexPort, clientID, apiAudience, clientID, testUser, testHash)
 
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write dex config: %v", err)
@@ -299,7 +304,7 @@ func robotLogin(authURL string) error {
 
 	m := formRe.FindStringSubmatch(body)
 	if m == nil {
-		return fmt.Errorf("no login form (status %d):\n%s", resp.StatusCode, body)
+		return fmt.Errorf("no login form (status %d, url %s):\n%s", resp.StatusCode, resp.Request.URL, body)
 	}
 	postURL := resolveRef(resp.Request.URL, html.UnescapeString(m[1]))
 
