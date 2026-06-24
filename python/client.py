@@ -26,6 +26,7 @@ from oidc_auth import (
     TokenStore,
     auth_code_flow,
     client_credentials_flow,
+    describe_token,
     device_flow,
     discover_provider,
 )
@@ -61,6 +62,8 @@ def main():
                         help="force a fresh interactive login")
     parser.add_argument("--logout", action="store_true",
                         help="delete the cached token and exit")
+    parser.add_argument("--info", action="store_true",
+                        help="print info about the cached token and exit")
     parser.add_argument("method", nargs="?",
                         help="RPC method (e.g. time, token)")
     args = parser.parse_args()
@@ -70,6 +73,14 @@ def main():
     if args.logout:
         store.clear()
         print("Logged out (cached token removed).")
+        return
+
+    if args.info:
+        try:
+            tok = store.load()
+            print(describe_token(tok, str(store.path)))
+        except FileNotFoundError:
+            print(f"No cached token at {store.path}")
         return
 
     if not args.method:

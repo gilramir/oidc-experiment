@@ -39,6 +39,7 @@ __all__ = [
     "client_credentials_flow",
     "refresh_access_token",
     "TokenStore",
+    "describe_token",
 ]
 
 
@@ -380,6 +381,90 @@ def refresh_access_token(
     if not fresh.refresh_token:
         fresh.refresh_token = tok.refresh_token
     return fresh
+
+
+# ---------------------------------------------------------------------------
+# Token introspection / debug display
+# ---------------------------------------------------------------------------
+
+
+def _decode_jwt_payload(raw_jwt: str) -> dict:
+    """Decode a JWT payload without verifying the signature."""
+    parts = raw_jwt.split(".")
+    if len(parts) != 3:
+        return {}
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return {}
+
+
+def _rel_time(t: datetime, now: datetime) -> str:
+    """Human-readable relative time: 'in 5m30s' or '5m30s ago'."""
+    secs = int(abs((t - now).total_seconds()))
+    if secs >= 86400:
+        d, h = secs // 86400, (secs % 86400) // 3600
+        s = f"{d}d{h}h" if h else f"{d}d"
+    elif secs >= 3600:
+        h, m = secs // 3600, (secs % 3600) // 60
+        s = f"{h}h{m}m" if m else f"{h}h"
+    elif secs >= 60:
+        m, sec = secs // 60, secs % 60
+        s = f"{m}m{sec}s" if sec else f"{m}m"
+    else:
+        s = f"{secs}s"
+    return f"in {s}" if t > now else f"{s} ago"
+
+
+def describe_token(tok: Token, path: Optional[str] = None) -> str:
+    """
+    Return a human-readable summary of a Token for debugging.
+
+    Decodes JWT payloads (without verifying signatures) to show all claims,
+    annotating iat/exp with human-readable relative times and VALID/EXPIRED.
+    Pass path to include the token file location in the output.
+    """
+    lines: list[str] = []
+    if path:
+        lines.append(f"Token file: {path}")
+
+    now = datetime.now(timezone.utc)
+
+    def _fmt_jwt(label: str, raw_jwt: str) -> None:
+        claims = _decode_jwt_payload(raw_jwt)
+        if not claims:
+            lines.append(f"\n{label}: (unreadable — not a valid JWT)")
+            return
+        lines.append(f"\n{label}")
+        shown: set[str] = set()
+        for key in ("iss", "sub", "aud", "email", "name", "email_verified"):
+            if key in claims:
+                lines.append(f"  {key + ':':<20} {claims[key]}")
+                shown.add(key)
+        skip = shown | {"iat", "exp", "at_hash", "c_hash", "nonce"}
+        for key, val in claims.items():
+            if key not in skip:
+                lines.append(f"  {key + ':':<20} {val}")
+        if "iat" in claims:
+            t = datetime.fromtimestamp(claims["iat"], tz=timezone.utc)
+            lines.append(f"  {'iat:':<20} {t.strftime('%Y-%m-%d %H:%M:%S UTC')}  ({_rel_time(t, now)})")
+        if "exp" in claims:
+            t = datetime.fromtimestamp(claims["exp"], tz=timezone.utc)
+            status = "EXPIRED" if now > t else "VALID"
+            lines.append(f"  {'exp:':<20} {t.strftime('%Y-%m-%d %H:%M:%S UTC')}  ({_rel_time(t, now)})  [{status}]")
+
+    if tok.access_token:
+        _fmt_jwt("Access token", tok.access_token)
+    if tok.id_token:
+        _fmt_jwt("ID token", tok.id_token)
+
+    if tok.refresh_token:
+        lines.append("\nRefresh token: present  (expiry is managed server-side)")
+    else:
+        lines.append("\nRefresh token: absent")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -23,6 +25,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gilramir/oidc-experiment/internal/auth"
@@ -53,6 +56,7 @@ func main() {
 	audience := flag.String("audience", defaultAudience, "API audience to request the access token for")
 	forceLogin := flag.Bool("login", false, "force a fresh interactive login")
 	logout := flag.Bool("logout", false, "delete the cached token and exit")
+	info := flag.Bool("info", false, "print info about the cached token and exit")
 	flag.Parse()
 
 	store, err := token.NewStore()
@@ -65,6 +69,11 @@ func main() {
 			fatal("logout: %v", err)
 		}
 		fmt.Println("Logged out (cached token removed).")
+		return
+	}
+
+	if *info {
+		printTokenInfo(store)
 		return
 	}
 
@@ -223,6 +232,142 @@ func openBrowser(u string) {
 		cmd = "xdg-open"
 	}
 	_ = exec.Command(cmd, append(args, u)...).Start()
+}
+
+// printTokenInfo loads the on-disk token and prints human-readable debugging
+// information: JWT claims for the access and ID tokens (with expiry annotations)
+// and whether a refresh token is present.
+func printTokenInfo(store *token.Store) {
+	fmt.Printf("Token file: %s\n", store.Path())
+	tok, err := store.Load()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Println("No cached token.")
+		} else {
+			fmt.Printf("Error reading token: %v\n", err)
+		}
+		return
+	}
+	now := time.Now()
+	printJWT("Access token", tok.AccessToken, now)
+	if id, ok := tok.Extra("id_token").(string); ok && id != "" {
+		printJWT("ID token", id, now)
+	}
+	if tok.RefreshToken != "" {
+		fmt.Println("\nRefresh token: present  (expiry is managed server-side)")
+	} else {
+		fmt.Println("\nRefresh token: absent")
+	}
+}
+
+func printJWT(label, rawJWT string, now time.Time) {
+	claims, err := decodeJWTClaims(rawJWT)
+	if err != nil {
+		fmt.Printf("\n%s: (unreadable: %v)\n", label, err)
+		return
+	}
+	fmt.Printf("\n%s\n", label)
+
+	shown := map[string]bool{}
+	for _, key := range []string{"iss", "sub", "aud", "email", "name", "email_verified"} {
+		if v, ok := claims[key]; ok {
+			fmt.Printf("  %-20s %s\n", key+":", claimStr(v))
+			shown[key] = true
+		}
+	}
+	skip := map[string]bool{"iat": true, "exp": true, "at_hash": true, "c_hash": true, "nonce": true}
+	for key, v := range claims {
+		if !shown[key] && !skip[key] {
+			fmt.Printf("  %-20s %s\n", key+":", claimStr(v))
+		}
+	}
+	if v, ok := claims["iat"]; ok {
+		if t, ok := unixTime(v); ok {
+			fmt.Printf("  %-20s %s  (%s)\n", "iat:", t.UTC().Format("2006-01-02 15:04:05 UTC"), relTime(t, now))
+		}
+	}
+	if v, ok := claims["exp"]; ok {
+		if t, ok := unixTime(v); ok {
+			status := "VALID"
+			if now.After(t) {
+				status = "EXPIRED"
+			}
+			fmt.Printf("  %-20s %s  (%s)  [%s]\n", "exp:", t.UTC().Format("2006-01-02 15:04:05 UTC"), relTime(t, now), status)
+		}
+	}
+}
+
+func decodeJWTClaims(rawJWT string) (map[string]interface{}, error) {
+	parts := strings.Split(rawJWT, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("not a JWT (%d segments)", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("decode payload: %w", err)
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("unmarshal claims: %w", err)
+	}
+	return claims, nil
+}
+
+// claimStr formats a JWT claim value for display. Arrays (e.g. aud) are
+// joined with commas rather than printed as Go slice literals.
+func claimStr(v interface{}) string {
+	if arr, ok := v.([]interface{}); ok {
+		parts := make([]string, len(arr))
+		for i, item := range arr {
+			parts[i] = fmt.Sprintf("%v", item)
+		}
+		return strings.Join(parts, ", ")
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func unixTime(v interface{}) (time.Time, bool) {
+	if n, ok := v.(float64); ok {
+		return time.Unix(int64(n), 0), true
+	}
+	return time.Time{}, false
+}
+
+func relTime(t, now time.Time) string {
+	d := t.Sub(now)
+	if d < 0 {
+		return fmtDuration(-d) + " ago"
+	}
+	return "in " + fmtDuration(d)
+}
+
+func fmtDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	switch {
+	case d >= 24*time.Hour:
+		days := d / (24 * time.Hour)
+		hours := (d % (24 * time.Hour)) / time.Hour
+		if hours == 0 {
+			return fmt.Sprintf("%dd", days)
+		}
+		return fmt.Sprintf("%dd%dh", days, hours)
+	case d >= time.Hour:
+		hours := d / time.Hour
+		mins := (d % time.Hour) / time.Minute
+		if mins == 0 {
+			return fmt.Sprintf("%dh", hours)
+		}
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	case d >= time.Minute:
+		mins := d / time.Minute
+		secs := (d % time.Minute) / time.Second
+		if secs == 0 {
+			return fmt.Sprintf("%dm", mins)
+		}
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	default:
+		return fmt.Sprintf("%ds", d/time.Second)
+	}
 }
 
 func fatal(format string, args ...interface{}) {
